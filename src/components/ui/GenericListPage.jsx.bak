@@ -1,0 +1,194 @@
+import React, { useState, useEffect, useMemo } from 'react'
+import { Search, RefreshCw, X, ExternalLink, CheckCircle2, Clock, AlertCircle, BarChart2 } from 'lucide-react'
+import { Table, StatusBadge, EmptyState, Skeleton, Modal, SyncResultCard, DetailGrid } from './index'
+import toast from 'react-hot-toast'
+
+/**
+ * Generic list page for Tasks, Checklists, Assets, Persons, Companies, Roles.
+ * Includes:
+ *  - Stats bar (counts by status)
+ *  - Full-detail modal with solid background (fixed in both light/dark theme)
+ *  - Proper search/filter
+ */
+export default function GenericListPage({
+  fetchFn,
+  syncFn,
+  columns,
+  emptyIcon,
+  emptyTitle,
+  emptyDesc,
+  activeProjectId,
+  searchKeys = ['name', 'title', 'externalId'],
+  showStats = true,
+}) {
+  const [items, setItems]           = useState([])
+  const [loading, setLoading]       = useState(true)
+  const [search, setSearch]         = useState('')
+  const [syncing, setSyncing]       = useState(false)
+  const [syncResult, setSyncResult] = useState(null)
+  const [detail, setDetail]         = useState(null)
+
+  const load = async () => {
+    setLoading(true)
+    try {
+      const res = await fetchFn(activeProjectId)
+      setItems(res.data.data || [])
+    } catch {
+      toast.error('Failed to load data')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => { load() }, [activeProjectId])
+
+  const handleSync = async () => {
+    if (!syncFn) return
+    setSyncing(true)
+    setSyncResult(null)
+    try {
+      const res = await syncFn(activeProjectId)
+      setSyncResult(res.data.data)
+      toast.success('Synced!')
+      load()
+    } catch {
+      toast.error('Sync failed')
+    } finally {
+      setSyncing(false)
+    }
+  }
+
+  // ── Stats derived from items ───────────────────────────────────────────────
+  const stats = useMemo(() => {
+    if (!items.length) return null
+    const total    = items.length
+    const finished = items.filter(i => ['finished','complete','completed','done','closed','resolved','signed_off']
+      .includes((i.status || '').toLowerCase().replace(/ /g,'_'))).length
+    const inProg   = items.filter(i => ['in_progress','inprogress','started','active','open']
+      .includes((i.status || '').toLowerCase().replace(/ /g,'_'))).length
+    const pending  = total - finished - inProg
+    const pct      = total > 0 ? Math.round((finished / total) * 100) : 0
+    return { total, finished, inProg, pending, pct }
+  }, [items])
+
+  const filtered = items.filter(item =>
+    !search || searchKeys.some(k => String(item[k] || '').toLowerCase().includes(search.toLowerCase()))
+  )
+
+  return (
+    <div className="space-y-5 animate-fade-in">
+
+      {/* ── Stats bar ─────────────────────────────────────────────────────── */}
+      {showStats && !loading && stats && stats.total > 0 && (
+        <div style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(4, 1fr)',
+          gap: 12,
+        }}>
+          {[
+            { label: 'Total', value: stats.total, color: '#38bdf8', bg: 'rgba(14,165,233,0.08)', border: 'rgba(14,165,233,0.2)', icon: BarChart2 },
+            { label: 'Finished', value: stats.finished, color: '#4ade80', bg: 'rgba(34,197,94,0.08)', border: 'rgba(34,197,94,0.2)', icon: CheckCircle2 },
+            { label: 'In Progress', value: stats.inProg, color: '#fbbf24', bg: 'rgba(234,179,8,0.08)', border: 'rgba(234,179,8,0.2)', icon: Clock },
+            { label: 'Completion', value: `${stats.pct}%`, color: stats.pct >= 80 ? '#4ade80' : stats.pct >= 50 ? '#fbbf24' : '#f87171',
+              bg: 'rgba(255,255,255,0.03)', border: 'rgba(255,255,255,0.08)', icon: AlertCircle },
+          ].map(s => {
+            const Icon = s.icon
+            return (
+              <div key={s.label} style={{
+                background: s.bg, border: `1px solid ${s.border}`,
+                borderRadius: 12, padding: '14px 16px',
+                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+              }}>
+                <div>
+                  <div style={{ fontSize: 10, fontWeight: 600, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 4 }}>
+                    {s.label}
+                  </div>
+                  <div style={{ fontSize: 26, fontWeight: 800, color: s.color, lineHeight: 1 }}>
+                    {s.value}
+                  </div>
+                </div>
+                <div style={{ width: 36, height: 36, borderRadius: 10, background: `${s.color}18`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  <Icon size={18} style={{ color: s.color }} />
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      )}
+
+      {/* Progress bar */}
+      {showStats && !loading && stats && stats.total > 0 && (
+        <div style={{ height: 6, borderRadius: 999, background: 'rgba(255,255,255,0.06)', overflow: 'hidden' }}>
+          <div style={{
+            height: '100%',
+            width: `${stats.pct}%`,
+            borderRadius: 999,
+            background: stats.pct >= 80 ? 'linear-gradient(90deg,#22c55e,#4ade80)' : stats.pct >= 50 ? 'linear-gradient(90deg,#f59e0b,#fbbf24)' : 'linear-gradient(90deg,#ef4444,#f87171)',
+            transition: 'width 0.6s ease',
+          }} />
+        </div>
+      )}
+
+      {/* ── Toolbar ─────────────────────────────────────────────────────── */}
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="relative flex-1 min-w-48">
+          <Search size={14} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-dark-500" />
+          <input type="text" value={search} onChange={e => setSearch(e.target.value)}
+            className="input-field pl-9" placeholder="Search..." />
+        </div>
+        {syncFn && (
+          <button onClick={handleSync} disabled={syncing} className="btn-secondary">
+            <RefreshCw size={14} className={syncing ? 'animate-spin' : ''} />
+            {syncing ? 'Syncing...' : 'Sync'}
+          </button>
+        )}
+        <div className="glass-card-light px-4 py-2 text-xs text-dark-400">
+          {search
+            ? <><span className="font-700 text-white">{filtered.length}</span> of <span className="font-700 text-white">{items.length}</span> records</>
+            : <><span className="font-700 text-white">{items.length}</span> records</>
+          }
+        </div>
+      </div>
+
+      {/* Sync result */}
+      {syncResult && (
+        <div className="relative">
+          <button onClick={() => setSyncResult(null)} className="absolute top-2 right-2 text-dark-400 hover:text-white z-10">
+            <X size={14} />
+          </button>
+          <SyncResultCard result={syncResult} />
+        </div>
+      )}
+
+      {/* ── Table ─────────────────────────────────────────────────────────── */}
+      {loading ? (
+        <div className="space-y-2">{[...Array(6)].map((_, i) => <Skeleton key={i} className="h-12" />)}</div>
+      ) : filtered.length === 0 ? (
+        <EmptyState icon={emptyIcon} title={emptyTitle} description={emptyDesc} />
+      ) : (
+        <Table
+          columns={[
+            ...columns,
+            {
+              key: '_detail', label: '', render: (_, row) => (
+                <button
+                  onClick={e => { e.stopPropagation(); setDetail(row) }}
+                  className="p-1.5 rounded-lg text-dark-400 hover:text-sky-400 hover:bg-sky-400/10 transition-all"
+                >
+                  <ExternalLink size={13} />
+                </button>
+              )
+            }
+          ]}
+          data={filtered}
+          onRowClick={setDetail}
+        />
+      )}
+
+      {/* ── Detail modal — solid bg, works in both light + dark themes ──── */}
+      <Modal open={!!detail} onClose={() => setDetail(null)} title="Record Details">
+        {detail && <DetailGrid data={detail} />}
+      </Modal>
+    </div>
+  )
+}
