@@ -1,4 +1,4 @@
-# CxAlloy Project Track — Frontend
+# CxAlloy Project Track - Frontend
 
 A modern React dashboard for the CxAlloy Spring Boot integration backend.
 
@@ -6,11 +6,11 @@ A modern React dashboard for the CxAlloy Spring Boot integration backend.
 
 - **React 18** + Vite
 - **Tailwind CSS** (WHOOP-inspired dark aesthetic)
-- **Recharts** — charts & visualizations
-- **React Router 6** — routing
-- **Axios** — API client with auto JWT refresh
-- **react-hot-toast** — notifications
-- **Lucide React** — icons
+- **Recharts** - charts and visualizations
+- **React Router 6** - routing
+- **Axios** - API client with auto JWT refresh
+- **react-hot-toast** - notifications
+- **Lucide React** - icons
 
 ## Setup
 
@@ -19,13 +19,19 @@ npm install
 npm run dev
 ```
 
-App runs on http://localhost:5173
+App runs on `http://localhost:5173`
 
-> **Backend** must be running on http://localhost:8080 (Vite proxy is pre-configured).
+> **Backend** should be running on `http://localhost:8081` for the current local setup.
+
+## Production Deploy
+
+For Google Cloud always-free deployment on an `e2-micro` VM, see:
+
+- [`GOOGLE_CLOUD_FREE_TIER_DEPLOY.md`](c:\Users\atula\OneDrive\Desktop\Projects\cx-dashboard\project-aries-frontend\GOOGLE_CLOUD_FREE_TIER_DEPLOY.md)
 
 ## Default Credentials
 
-```
+```text
 Username: admin
 Password: admin123
 ```
@@ -37,16 +43,16 @@ Password: admin123
 | Overview | `/dashboard` | Project health, completion donuts, issue trend chart |
 | Tags & Issues | `/issues` | CRUD + sync issues, search/filter |
 | Tasks | `/tasks` | View & sync tasks |
-| Checklists | `/checklists` | View & sync checklists |
+| Checklists | `/checklists` | View and sync checklists |
 | Assets | `/assets` | Equipment, buildings, systems |
 | People | `/persons` | Project personnel |
 | Companies | `/companies` | Organizations |
-| Roles | `/roles` | Roles & responsibilities |
+| Roles | `/roles` | Roles and responsibilities |
 | Sync Center | `/sync` | Individual syncs, full background sync, diagnostics |
 
 ## Backend Endpoints Used
 
-```
+```text
 POST /api/auth/login
 POST /api/auth/logout
 POST /api/auth/refresh
