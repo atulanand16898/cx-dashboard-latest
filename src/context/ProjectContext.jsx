@@ -17,10 +17,22 @@ export function ProjectProvider({ children }) {
       const res = await projectsApi.getAll()
       const list = res.data.data || []
       setProjects(list)
-      if (list.length > 0 && !activeProject) {
-        setActiveProject(list[0])
-        setSelectedProjects([list[0]])
+      if (list.length === 0) {
+        setActiveProject(null)
+        setSelectedProjects([])
+        return
       }
+
+      const stillActive = activeProject && list.some(project => project.id === activeProject.id)
+      if (!stillActive) {
+        setActiveProject(list[0])
+      }
+
+      setSelectedProjects(prev => {
+        const filtered = prev.filter(selected => list.some(project => project.id === selected.id))
+        if (filtered.length > 0) return filtered
+        return stillActive ? [activeProject] : [list[0]]
+      })
     } finally {
       setLoading(false)
     }

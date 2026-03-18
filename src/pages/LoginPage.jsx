@@ -14,14 +14,17 @@ export default function LoginPage() {
 
   const handleSubmit = async (e) => {
     e.preventDefault()
-    if (!username || !password) return toast.error('Fill in all fields')
+    const cleanUsername = username.trim()
+    const cleanPassword = password.trim()
+
+    if (!cleanUsername || !cleanPassword) return toast.error('Fill in all fields')
     setLoading(true)
     try {
-      await login(username, password)
+      await login(cleanUsername, cleanPassword)
       navigate('/dashboard')
       toast.success('Welcome back!')
     } catch (err) {
-      toast.error(err.response?.data?.message || 'Invalid credentials')
+      toast.error(err.response?.data?.message || err.message || 'Invalid credentials')
     } finally {
       setLoading(false)
     }
@@ -58,7 +61,7 @@ export default function LoginPage() {
 
           <form onSubmit={handleSubmit} className="space-y-4">
             <div>
-              <label className="block text-xs font-600 text-dark-400 mb-1.5">Username</label>
+              <label className="block text-xs font-600 text-dark-400 mb-1.5">Username or Email</label>
               <div className="relative">
                 <User size={14} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-dark-500" />
                 <input
@@ -66,7 +69,7 @@ export default function LoginPage() {
                   value={username}
                   onChange={e => setUsername(e.target.value)}
                   className="input-field pl-9"
-                  placeholder="admin"
+                  placeholder="admin or name@example.com"
                   autoComplete="username"
                 />
               </div>
@@ -115,7 +118,7 @@ export default function LoginPage() {
         </div>
 
         <p className="text-center text-xs text-dark-600 mt-5">
-          Default: <span className="font-mono text-dark-400">admin / admin123</span>
+          Admin: <span className="font-mono text-dark-400">admin / admin123</span> · User: <span className="font-mono text-dark-400">email / same email</span>
         </p>
       </div>
     </div>

@@ -1,0 +1,8 @@
+target
+.m2repo
+.git
+.github
+*.log
+*.err.log
+README.md
+

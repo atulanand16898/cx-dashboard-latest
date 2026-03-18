@@ -1,0 +1,45 @@
+name: Deploy To Azure VM
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.AZURE_VM_HOST }}
+          username: ${{ secrets.AZURE_VM_USER }}
+          key: ${{ secrets.AZURE_VM_SSH_KEY }}
+          script: |
+            set -e
+            APP_DIR="${{ secrets.AZURE_VM_APP_DIR }}"
+            REPO_URL="https://github.com/${{ github.repository }}.git"
+            BRANCH="${{ github.ref_name }}"
+
+            if [ ! -d "$APP_DIR/.git" ]; then
+              git clone "$REPO_URL" "$APP_DIR"
+            fi
+
+            cd "$APP_DIR"
+
+            cat > .env.production <<'EOF'
+            POSTGRES_DB=${{ secrets.POSTGRES_DB }}
+            DB_USERNAME=${{ secrets.DB_USERNAME }}
+            DB_PASSWORD=${{ secrets.DB_PASSWORD }}
+            CORS_ALLOWED_ORIGINS=${{ secrets.CORS_ALLOWED_ORIGINS }}
+            CXALLOY_API_IDENTIFIER=${{ secrets.CXALLOY_API_IDENTIFIER }}
+            CXALLOY_API_SECRET=${{ secrets.CXALLOY_API_SECRET }}
+            JWT_SECRET=${{ secrets.JWT_SECRET }}
+            OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}
+            EOF
+
+            chmod +x deploy/azure-vm-deploy.sh
+            APP_DIR="$APP_DIR" BRANCH="$BRANCH" ./deploy/azure-vm-deploy.sh

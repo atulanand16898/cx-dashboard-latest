@@ -1,0 +1,45 @@
+package com.cxalloy.integration.dto;
+
+import java.util.ArrayList;
+import java.util.List;
+
+public class SavedReportRequest {
+
+    private String projectId;
+    private String title;
+    private String reportType;
+    private String dateFrom;
+    private String dateTo;
+    private List<String> sections = new ArrayList<>();
+    private List<String> issueStatuses = new ArrayList<>();
+    private List<String> checklistStatuses = new ArrayList<>();
+    private List<String> equipmentTypes = new ArrayList<>();
+    private String summaryText;
+    private String safetyNotes;
+    private String commercialNotes;
+
+    public String getProjectId() { return projectId; }
+    public void setProjectId(String projectId) { this.projectId = projectId; }
+    public String getTitle() { return title; }
+    public void setTitle(String title) { this.title = title; }
+    public String getReportType() { return reportType; }
+    public void setReportType(String reportType) { this.reportType = reportType; }
+    public String getDateFrom() { return dateFrom; }
+    public void setDateFrom(String dateFrom) { this.dateFrom = dateFrom; }
+    public String getDateTo() { return dateTo; }
+    public void setDateTo(String dateTo) { this.dateTo = dateTo; }
+    public List<String> getSections() { return sections; }
+    public void setSections(List<String> sections) { this.sections = sections == null ? new ArrayList<>() : sections; }
+    public List<String> getIssueStatuses() { return issueStatuses; }
+    public void setIssueStatuses(List<String> issueStatuses) { this.issueStatuses = issueStatuses == null ? new ArrayList<>() : issueStatuses; }
+    public List<String> getChecklistStatuses() { return checklistStatuses; }
+    public void setChecklistStatuses(List<String> checklistStatuses) { this.checklistStatuses = checklistStatuses == null ? new ArrayList<>() : checklistStatuses; }
+    public List<String> getEquipmentTypes() { return equipmentTypes; }
+    public void setEquipmentTypes(List<String> equipmentTypes) { this.equipmentTypes = equipmentTypes == null ? new ArrayList<>() : equipmentTypes; }
+    public String getSummaryText() { return summaryText; }
+    public void setSummaryText(String summaryText) { this.summaryText = summaryText; }
+    public String getSafetyNotes() { return safetyNotes; }
+    public void setSafetyNotes(String safetyNotes) { this.safetyNotes = safetyNotes; }
+    public String getCommercialNotes() { return commercialNotes; }
+    public void setCommercialNotes(String commercialNotes) { this.commercialNotes = commercialNotes; }
+}

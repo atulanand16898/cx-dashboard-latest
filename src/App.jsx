@@ -24,8 +24,10 @@ import PlannedVsActualPage from './pages/PlannedVsActualPage'
 import TrackerPulsePage from './pages/TrackerPulsePage'
 import ChecklistFlowPage from './pages/ChecklistFlowPage'
 import IssueRadarPage from './pages/IssueRadarPage'
+import AICopilotPage from './pages/AICopilotPage'
 import AssetReadinessPage from './pages/AssetReadinessPage'
-import TrackerBriefsPage from './pages/TrackerBriefsPage'
+import ReportsPage from './pages/ReportsPage'
+import ProjectAccessPage from './pages/ProjectAccessPage'
 
 export default function App() {
   return (
@@ -80,8 +82,11 @@ export default function App() {
               <Route path="tracker-pulse" element={<TrackerPulsePage />} />
               <Route path="checklist-flow" element={<ChecklistFlowPage />} />
               <Route path="issue-radar" element={<IssueRadarPage />} />
+              <Route path="ai-copilot" element={<AICopilotPage />} />
               <Route path="asset-readiness" element={<AssetReadinessPage />} />
-              <Route path="tracker-briefs" element={<TrackerBriefsPage />} />
+              <Route path="reports" element={<ReportsPage />} />
+              <Route path="tracker-briefs" element={<ReportsPage />} />
+              <Route path="project-access" element={<ProjectAccessPage />} />
             </Route>
 
             <Route path="*" element={<Navigate to="/dashboard" replace />} />

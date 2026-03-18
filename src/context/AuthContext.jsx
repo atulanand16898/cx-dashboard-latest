@@ -7,11 +7,16 @@ export function AuthProvider({ children }) {
   const [user, setUser] = useState(null)
   const [loading, setLoading] = useState(true)
 
+  const refreshUser = async () => {
+    const meRes = await authApi.me()
+    setUser(meRes.data.data)
+    return meRes.data.data
+  }
+
   useEffect(() => {
     const token = localStorage.getItem('access_token')
     if (token) {
-      authApi.me()
-        .then(res => setUser(res.data.data))
+      refreshUser()
         .catch(() => { localStorage.clear(); setUser(null) })
         .finally(() => setLoading(false))
     } else {
@@ -20,12 +25,17 @@ export function AuthProvider({ children }) {
   }, [])
 
   const login = async (username, password) => {
-    const res = await authApi.login({ username, password })
+    localStorage.removeItem('access_token')
+    localStorage.removeItem('refresh_token')
+
+    const res = await authApi.login({
+      username: username.trim(),
+      password: password.trim(),
+    })
     const { accessToken, refreshToken } = res.data.data
     localStorage.setItem('access_token', accessToken)
     localStorage.setItem('refresh_token', refreshToken)
-    const meRes = await authApi.me()
-    setUser(meRes.data.data)
+    await refreshUser()
   }
 
   const logout = async () => {
@@ -36,7 +46,16 @@ export function AuthProvider({ children }) {
   }
 
   return (
-    <AuthContext.Provider value={{ user, login, logout, loading, isAuthenticated: !!user }}>
+    <AuthContext.Provider value={{
+      user,
+      login,
+      logout,
+      refreshUser,
+      loading,
+      isAuthenticated: !!user,
+      isAdmin: !!user?.isAdmin,
+      accessibleProjectIds: user?.accessibleProjectIds || [],
+    }}>
       {children}
     </AuthContext.Provider>
   )

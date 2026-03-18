@@ -1,0 +1,37 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-cxalloydb}
+      POSTGRES_USER: ${DB_USERNAME:-cxalloy}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-cxalloypass}
+    volumes:
+      - cxalloy-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USERNAME:-cxalloy} -d ${POSTGRES_DB:-cxalloydb}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      SERVER_PORT: 8081
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-cxalloydb}
+      DB_USERNAME: ${DB_USERNAME:-cxalloy}
+      DB_PASSWORD: ${DB_PASSWORD:-cxalloypass}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://127.0.0.1:5173,http://localhost:5173,http://localhost:3000}
+      CXALLOY_API_IDENTIFIER: ${CXALLOY_API_IDENTIFIER:-replace-me}
+      CXALLOY_API_SECRET: ${CXALLOY_API_SECRET:-replace-me}
+      JWT_SECRET: ${JWT_SECRET:-replace-me-with-a-long-random-secret}
+    ports:
+      - "8081:8081"
+    restart: unless-stopped
+
+volumes:
+  cxalloy-postgres-data:

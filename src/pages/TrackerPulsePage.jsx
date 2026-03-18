@@ -4,6 +4,7 @@ import { useProject } from '../context/ProjectContext'
 import { checklistsApi, issuesApi, tasksApi } from '../services/api'
 
 const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+const SUMMARY_MATRIX_TAG_ORDER = ['red', 'yellow', 'green', 'blue', 'white']
 const TAG_COLORS_MAP = {
   red: '#ef4444', yellow: '#eab308', green: '#22c55e',
   blue: '#3b82f6', white: '#94a3b8',
@@ -237,14 +238,13 @@ function computeStats(checklists, issues, tasks) {
   })
 
   // Per-color completion — use cached tags for consistency
-  const colorRows = ['red', 'yellow', 'green', 'blue', 'white']
+  const colorRows = SUMMARY_MATRIX_TAG_ORDER
     .map(tag => {
       const count = colorCounts[tag] || 0
       const closedOfTag = checklists.filter(c => tagCache.get(c) === tag && isDone(c.status)).length
       const pct = count > 0 ? Math.round(closedOfTag / count * 100) : 0
       return { tag, count, closedOfTag, pct }
     })
-    .sort((a, b) => b.count - a.count)
 
   // ── Schedule variance from tasks ─────────────────────────────────────────
   let schedVariance = 0

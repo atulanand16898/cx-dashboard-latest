@@ -5,10 +5,12 @@ const api = axios.create({
   headers: { 'Content-Type': 'application/json' },
 })
 
+const isAuthRoute = (url = '') => url.includes('/auth/login') || url.includes('/auth/refresh')
+
 // Attach JWT token to every request
 api.interceptors.request.use((config) => {
   const token = localStorage.getItem('access_token')
-  if (token) {
+  if (token && !isAuthRoute(config.url)) {
     config.headers.Authorization = `Bearer ${token}`
   }
   return config
@@ -18,10 +20,11 @@ api.interceptors.request.use((config) => {
 api.interceptors.response.use(
   (res) => res,
   async (error) => {
-    if (error.response?.status === 401) {
+    if (error.response?.status === 401 && !isAuthRoute(error.config?.url) && !error.config?._retry) {
       const refreshToken = localStorage.getItem('refresh_token')
       if (refreshToken) {
         try {
+          error.config._retry = true
           const resp = await axios.post('/api/auth/refresh', { refreshToken })
           const { accessToken, refreshToken: newRefresh } = resp.data.data
           localStorage.setItem('access_token', accessToken)
@@ -46,6 +49,26 @@ export const authApi = {
   login: (creds) => api.post('/auth/login', creds),
   logout: (refreshToken) => api.post('/auth/logout', { refreshToken }),
   me: () => api.get('/auth/me'),
+}
+
+export const projectAccessApi = {
+  getAll: () => api.get('/project-access'),
+  getProjectCatalog: () => api.get('/project-access/projects'),
+  getVisibility: () => api.get('/project-access/visibility'),
+  saveVisibility: (payload) => api.put('/project-access/visibility', payload),
+  assign: (payload) => api.post('/project-access', payload),
+  remove: (id) => api.delete(`/project-access/${id}`),
+}
+
+export const reportsApi = {
+  getAll: (projectId) => api.get('/reports', { params: { projectId } }),
+  getOptions: (projectId) => api.get('/reports/options', { params: { projectId } }),
+  getById: (id) => api.get(`/reports/${id}`),
+  generate: (payload) => api.post('/reports/generate', payload),
+  download: (id, format = 'json') => api.get(`/reports/${id}/download`, {
+    params: { format },
+    responseType: 'blob',
+  }),
 }
 
 // Projects
@@ -139,6 +162,27 @@ export const equipmentApi = {
   getMatrix: (projectId) => api.get('/equipment/matrix', { params: projectId ? { projectId } : {} }),
 }
 
+// AI Copilot
+export const copilotApi = {
+  getContext: (projectIds, query) => api.get('/copilot/context', {
+    params: {
+      ...(projectIds?.length ? { projectIds } : {}),
+      ...(query ? { query } : {}),
+    },
+    paramsSerializer: {
+      indexes: null,
+    },
+  }),
+  chat: ({ payload, files = [] }) => {
+    const formData = new FormData()
+    formData.append('payload', JSON.stringify(payload))
+    files.forEach(file => formData.append('files', file))
+    return api.post('/copilot/chat', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
+  },
+}
+
 // Sync (orchestration)
 export const syncApi = {
   syncAll: () => api.post('/sync/all'),
@@ -162,6 +206,8 @@ export default api
 
 // File Storage Analysis
 export const fileStorageApi = {
+  sync: (projectId) =>
+    api.post('/files/sync', null, { params: projectId ? { projectId } : {} }),
   analyze: (projectId) =>
     api.post('/files/analyze', null, { params: projectId ? { projectId } : {} }),
   getReport: (projectId) =>

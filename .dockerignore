@@ -1,0 +1,16 @@
+.git
+.github
+node_modules
+dist
+frontend.log
+frontend.err.log
+pdf-smoke.html
+pdf-smoke.pdf
+sample-report-page1.png
+.env
+.env.*
+!.env.production.example
+backend/target
+backend/.m2repo
+backend/*.log
+backend/*.err.log

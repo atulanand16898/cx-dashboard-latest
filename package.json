@@ -5,6 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "start-frontend": "cmd /c start-frontend.cmd",
+    "start-backend": "cmd /c start-backend.cmd",
+    "start-backend-docker": "cmd /c start-backend-docker.cmd",
     "build": "vite build",
     "preview": "vite preview"
   },

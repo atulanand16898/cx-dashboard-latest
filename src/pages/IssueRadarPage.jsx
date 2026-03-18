@@ -11,8 +11,6 @@
  *   spaceId, zoneId, buildingId, floorId, location (pre-derived by backend)
  *   createdAt, updatedAt, rawJson, syncedAt
  *
- * AI Analysis: uses OpenAI GPT-4o-mini via VITE_OPENAI_API_KEY env var.
- * Add VITE_OPENAI_API_KEY=sk-... to your .env file.
  */
 import React, { useState, useEffect, useMemo, useRef } from 'react'
 import { useProject } from '../context/ProjectContext'
@@ -21,7 +19,7 @@ import { issuesApi } from '../services/api'
 // ─── Constants ────────────────────────────────────────────────────────────────
 const ALL_STATUSES = ['Open', 'Correction In Progress', 'Ready For Verification', 'Closed']
 const PRIORITIES   = ['P1 - Critical', 'P2 - High', 'P3 - Medium', 'P4 - Low']
-const TABS         = ['Statistics', 'Flow Analysis', 'Cross-Company', 'AI Analysis']
+const TABS         = ['Statistics', 'Flow Analysis', 'Cross-Company']
 
 const STATUS_COLORS = {
   'Open':                      '#ef4444',
@@ -727,7 +725,7 @@ export default function IssueRadarPage() {
       {/* Title */}
       <div>
         <h2 style={{ fontSize: 22, fontWeight: 800, color: 'var(--text-primary)', margin: 0 }}>Issue Radar</h2>
-        <p style={{ fontSize: 13, color: '#64748b', marginTop: 4 }}>Issue statistics, workflow bottlenecks, cross-company impact, and AI root-cause diagnostics.</p>
+        <p style={{ fontSize: 13, color: '#64748b', marginTop: 4 }}>Issue statistics, workflow bottlenecks, and cross-company impact.</p>
       </div>
 
       {/* Summary insight bar */}
@@ -774,7 +772,6 @@ export default function IssueRadarPage() {
           {activeTab === 'Statistics'    && <StatisticsTab    radar={radar} />}
           {activeTab === 'Flow Analysis' && <FlowAnalysisTab  radar={radar} />}
           {activeTab === 'Cross-Company' && <CrossCompanyTab  radar={radar} />}
-          {activeTab === 'AI Analysis'   && <AICopilot radar={radar} issues={issues} />}
         </>
       )}
     </div>
