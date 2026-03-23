@@ -31,10 +31,14 @@ public class ProjectFileLibraryService {
 
     public ProjectFileLibraryService(ProjectFileFolderRepository folderRepository,
                                      ProjectManagedFileRepository fileRepository,
-                                     @Value("${app.files.storage-dir:backend/uploads/project-files}") String storageDir) {
+                                     @Value("${app.files.storage-dir:}") String storageDir) {
         this.folderRepository = folderRepository;
         this.fileRepository = fileRepository;
-        this.storageRoot = Paths.get(storageDir).toAbsolutePath().normalize();
+        String effectiveStorageDir = Optional.ofNullable(storageDir)
+                .map(String::trim)
+                .filter(value -> !value.isBlank())
+                .orElseGet(() -> Paths.get(System.getProperty("java.io.tmpdir"), "project-files").toString());
+        this.storageRoot = Paths.get(effectiveStorageDir).toAbsolutePath().normalize();
     }
 
     @Transactional(readOnly = true)

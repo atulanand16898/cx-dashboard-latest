@@ -1077,7 +1077,10 @@ public class SavedReportService {
             try {
                 return buildPdfWithPdfBox(report);
             } catch (Exception fallback) {
-                throw new IllegalStateException("Failed to generate PDF report: " + e.getMessage(), fallback);
+                throw new IllegalStateException(
+                        "Failed to generate PDF report. Browser path error: " + e.getMessage() + ". PDFBox fallback error: " + fallback.getMessage(),
+                        fallback
+                );
             }
         } finally {
             try {
@@ -2357,9 +2360,10 @@ public class SavedReportService {
         }
 
         private List<String> wrapText(String text, PDFont font, float fontSize, float maxWidth) throws IOException {
+            String sanitizedText = sanitizePdfText(text);
             List<String> lines = new ArrayList<>();
             StringBuilder current = new StringBuilder();
-            for (String word : text.split("\\s+")) {
+            for (String word : sanitizedText.split("\\s+")) {
                 String candidate = current.isEmpty() ? word : current + " " + word;
                 float width = font.getStringWidth(candidate) / 1000f * fontSize;
                 if (width > maxWidth && !current.isEmpty()) {
@@ -2380,7 +2384,7 @@ public class SavedReportService {
             content.setFont(font, fontSize);
             content.setNonStrokingColor(color);
             content.newLineAtOffset(x, y);
-            content.showText(text == null ? "" : text);
+            content.showText(sanitizePdfText(text));
             content.endText();
         }
 
@@ -2410,6 +2414,22 @@ public class SavedReportService {
                 content = null;
             }
         }
+    }
+
+    private static String sanitizePdfText(String text) {
+        if (text == null) {
+            return "";
+        }
+        return text
+                .replace('\u2013', '-')
+                .replace('\u2014', '-')
+                .replace('\u2018', '\'')
+                .replace('\u2019', '\'')
+                .replace('\u201C', '"')
+                .replace('\u201D', '"')
+                .replace('\u2022', '-')
+                .replace("\u2026", "...")
+                .replace('\u00A0', ' ');
     }
 
     private record Range(LocalDate from, LocalDate to) {}
