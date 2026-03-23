@@ -105,6 +105,37 @@ export const checklistsApi = {
   getAll: (projectId) => api.get('/checklists', { params: projectId ? { projectId } : {} }),
   getById: (id) => api.get(`/checklists/${id}`),
   sync: (projectId) => api.post('/checklists/sync', null, { params: projectId ? { projectId } : {} }),
+  syncStatusDates: (projectId) => api.post('/checklists/status-dates/sync', null, { params: { projectId } }),
+  syncWithStatusDates: async (projectId) => {
+    const checklistResponse = await api.post('/checklists/sync', null, { params: projectId ? { projectId } : {} })
+    const statusDateResponse = projectId
+      ? await api.post('/checklists/status-dates/sync', null, { params: { projectId } })
+      : null
+
+    if (!statusDateResponse?.data?.data) {
+      return checklistResponse
+    }
+
+    const checklistData = checklistResponse?.data?.data || {}
+    const statusDateData = statusDateResponse.data.data || {}
+    const mergedData = {
+      ...checklistData,
+      status: 'SUCCESS',
+      recordsSynced: Number(checklistData.recordsSynced || 0) + Number(statusDateData.recordsSynced || 0),
+      message: [checklistData.message, statusDateData.message].filter(Boolean).join(' | '),
+      checklistRecordsSynced: Number(checklistData.recordsSynced || 0),
+      statusDateRecordsSynced: Number(statusDateData.recordsSynced || 0),
+      statusDatesSynced: true,
+    }
+
+    return {
+      ...checklistResponse,
+      data: {
+        ...checklistResponse.data,
+        data: mergedData,
+      },
+    }
+  },
 }
 
 // Assets
@@ -164,10 +195,11 @@ export const equipmentApi = {
 
 // AI Copilot
 export const copilotApi = {
-  getContext: (projectIds, query) => api.get('/copilot/context', {
+  getContext: (projectIds, query, includeProjectFiles = true) => api.get('/copilot/context', {
     params: {
       ...(projectIds?.length ? { projectIds } : {}),
       ...(query ? { query } : {}),
+      includeProjectFiles,
     },
     paramsSerializer: {
       indexes: null,
@@ -228,4 +260,27 @@ export const fileStorageApi = {
     }),
   getHeaviestAssets: (projectId, limit = 5) =>
     api.get('/files/heaviest-assets', { params: { ...(projectId ? { projectId } : {}), limit } }),
+}
+
+export const projectFilesApi = {
+  list: (projectId) => api.get('/project-files', { params: { projectId } }),
+  createFolder: (projectId, name) => api.post('/project-files/folders', { name }, { params: { projectId } }),
+  deleteFolder: (projectId, folderId) => api.delete(`/project-files/folders/${folderId}`, { params: { projectId } }),
+  upload: (projectId, folderId, files) => {
+    const formData = new FormData()
+    files.forEach((file) => formData.append('files', file))
+    return api.post('/project-files/upload', formData, {
+      params: { projectId, folderId },
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
+  },
+  updateStatus: (projectId, fileId, status) =>
+    api.put(`/project-files/${fileId}/status`, { status }, { params: { projectId } }),
+  deleteFile: (projectId, fileId) =>
+    api.delete(`/project-files/${fileId}`, { params: { projectId } }),
+  download: (projectId, fileId) =>
+    api.get(`/project-files/${fileId}/download`, {
+      params: { projectId },
+      responseType: 'blob',
+    }),
 }

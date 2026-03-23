@@ -31,10 +31,11 @@ public class CopilotController {
     @GetMapping("/context")
     public ResponseEntity<ApiResponse<Map<String, Object>>> context(
             @RequestParam(required = false) List<String> projectIds,
-            @RequestParam(required = false) String query
+            @RequestParam(required = false) String query,
+            @RequestParam(defaultValue = "true") boolean includeProjectFiles
     ) {
         return ResponseEntity.ok(ApiResponse.success(
-                copilotService.getWorkspaceContext(projectIds, query),
+                copilotService.getWorkspaceContext(projectIds, query, includeProjectFiles),
                 "Copilot workspace context"
         ));
     }

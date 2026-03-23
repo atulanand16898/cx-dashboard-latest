@@ -1,483 +1,1314 @@
-/**
- * AssetReadinessPage — three-tab layout matching modum.me screenshots:
- *
- *  Tab 1: Status & Timeline  — status progression circles + momentum chart
- *  Tab 2: Equipment Matrix   — cross-reference table (EquipmentChecklistMatrix)
- *  Tab 3: Risk Analytics     — equipment risk cards with score, staleness, priority
- *
- * Backend APIs used:
- *  GET /api/equipment?projectId=X        — equipment list (status, type, discipline, counts)
- *  GET /api/equipment/matrix?projectId=X — matrix DTO for Tab 2
- *  GET /api/equipment/live?projectId=X   — fallback when DB empty
- */
-import React, { useState, useEffect, useMemo } from 'react'
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts'
-import { Search } from 'lucide-react'
+import React, { useEffect, useMemo, useState } from 'react'
+import { AlertTriangle, ChevronDown, ChevronRight, Download, ExternalLink, Grid2X2, LayoutGrid, Layers3, Siren, TriangleAlert, Workflow, Wrench } from 'lucide-react'
 import { useProject } from '../context/ProjectContext'
-import { equipmentApi } from '../services/api'
+import { checklistsApi, equipmentApi, issuesApi } from '../services/api'
 import EquipmentChecklistMatrix from '../components/ui/EquipmentChecklistMatrix'
 
-// ─── Constants ────────────────────────────────────────────────────────────────
-const STATUS_ORDER = ['Not Assigned','Asset Assigned','Pre-Cx','Cx In Progress','Cx Complete','Ready For Startup','In Service']
-const DONE_STATUSES = new Set(['Cx Complete','Ready For Startup','In Service'])
-const TABS = ['Status & Timeline', 'Equipment Matrix', 'Risk Analytics']
-
-// Risk level thresholds (from screenshot: Critical/High/Medium/Low/Blocking/Urgent/Stale)
-const RISK_LEVELS = [
-  { key: 'Critical', color: '#ef4444', bg: 'rgba(239,68,68,0.15)',   min: 80 },
-  { key: 'High',     color: '#f97316', bg: 'rgba(249,115,22,0.15)',  min: 60 },
-  { key: 'Medium',   color: '#eab308', bg: 'rgba(234,179,8,0.15)',   min: 40 },
-  { key: 'Low',      color: '#22c55e', bg: 'rgba(34,197,94,0.15)',   min: 0  },
+const LEVELS = [
+  { key: 'L1', label: 'L1', color: '#ef4444', headerBackground: 'rgba(239, 68, 68, 0.18)' },
+  { key: 'L2', label: 'L2', color: '#facc15', headerBackground: 'rgba(250, 204, 21, 0.16)' },
+  { key: 'L3', label: 'L3', color: '#22c55e', headerBackground: 'rgba(34, 197, 94, 0.16)' },
+  { key: 'L4', label: 'L4', color: '#3b82f6', headerBackground: 'rgba(59, 130, 246, 0.16)' },
 ]
 
-// ─── Status normaliser — maps backend tokens to display names ─────────────────
-function normStatus(e) {
-  const raw = e.status || e.equipmentStatus || ''
-  if (STATUS_ORDER.includes(raw)) return raw
-  const s = raw.toLowerCase().replace(/ /g,'_').replace(/-/g,'_')
-  if (!s || s.includes('not_assigned') || s === 'unassigned') return 'Not Assigned'
-  if (s.includes('asset_assigned') || (s.includes('assigned') && !s.includes('not'))) return 'Asset Assigned'
-  if (s.includes('pre_cx') || s.includes('precx')) return 'Pre-Cx'
-  if (s.includes('cx_in') || (s.includes('in_progress') && s.includes('cx'))) return 'Cx In Progress'
-  if (s.includes('cx_complete') || s.includes('cx_done')) return 'Cx Complete'
-  if (s.includes('ready') || s.includes('startup')) return 'Ready For Startup'
-  if (s.includes('in_service') || s.includes('commissioned')) return 'In Service'
-  return 'Not Assigned'
+const SUB_TABS = [
+  { key: 'tracker', label: 'Equipment Tracker', icon: LayoutGrid },
+  { key: 'matrix', label: 'Equipment Matrix', icon: Grid2X2 },
+]
+
+const COMPLETE_STATUSES = new Set(['finished', 'complete', 'completed', 'done', 'closed', 'signed_off', 'approved', 'passed'])
+const CLOSED_ISSUE_STATUSES = new Set(['issue_closed', 'closed', 'accepted_by_owner', 'done', 'resolved', 'completed'])
+
+function normalizeText(value) {
+  return String(value || '').trim().toLowerCase()
 }
 
-// ─── Stale days: days since last update ──────────────────────────────────────
-function staleDays(e) {
-  const now = new Date()
-  const d = new Date(e.updatedAt || e.updated_at || e.createdAt || e.created_at || e.syncedAt || now)
-  return isNaN(d) ? 0 : Math.max(0, Math.round((now - d) / 86400000))
+function normalizeDiscipline(value) {
+  const raw = normalizeText(value)
+  if (!raw) return 'Other'
+  if (raw.includes('elec') || raw.includes('power') || raw.includes('control') || raw.includes('epms') || raw.includes('busway')) return 'Electrical'
+  if (raw.includes('mech') || raw.includes('hvac') || raw.includes('pipe') || raw.includes('water') || raw.includes('fuel') || raw.includes('cool')) return 'Mechanical'
+  return 'Other'
 }
 
-// ─── Risk score computation (0-100) ──────────────────────────────────────────
-// Mirrors the screenshot: score 100 = Critical, stale 149d, P1-Critical
-function computeRiskScore(e, stale) {
-  const statusIdx  = STATUS_ORDER.indexOf(normStatus(e))
-  const stateScore = statusIdx === -1 ? 100 : Math.round((1 - statusIdx / (STATUS_ORDER.length - 1)) * 60)
-  const staleScore = Math.min(30, Math.round(stale / 5))
-  const issueScore = Math.min(10, (e.issueCount || 0) * 2)
-  return Math.min(100, stateScore + staleScore + issueScore)
+function getEquipmentLabel(equipment) {
+  return equipment.equipmentType || equipment.systemName || equipment.discipline || 'Unclassified'
 }
 
-function riskLevel(score) {
-  for (const lv of RISK_LEVELS) if (score >= lv.min) return lv
-  return RISK_LEVELS[RISK_LEVELS.length - 1]
+function getChecklistLevel(checklist) {
+  const source = [checklist.tagLevel, checklist.checklistType, checklist.name].map(normalizeText).join(' ')
+  if (source.includes('red') || source.includes('l1') || source.includes('level-1') || source.includes('level 1')) return 'L1'
+  if (source.includes('yellow') || source.includes('l2') || source.includes('level-2') || source.includes('level 2')) return 'L2'
+  if (source.includes('green') || source.includes('l3') || source.includes('level-3') || source.includes('level 3')) return 'L3'
+  if (source.includes('blue') || source.includes('l4') || source.includes('level-4') || source.includes('level 4')) return 'L4'
+  return null
 }
 
-function riskPriority(score) {
-  if (score >= 80) return 'P1 - Critical'
-  if (score >= 60) return 'P2 - High'
-  if (score >= 40) return 'P3 - Medium'
-  return 'P4 - Low'
+function isChecklistClosed(checklist) {
+  return COMPLETE_STATUSES.has(normalizeText(checklist.status).replace(/\s+/g, '_'))
 }
 
-// ─── ISO week helper ──────────────────────────────────────────────────────────
-function isoWeekLabel(d) {
-  const tmp = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()))
-  const day = tmp.getUTCDay() || 7
-  tmp.setUTCDate(tmp.getUTCDate() + 4 - day)
-  const yr = new Date(Date.UTC(tmp.getUTCFullYear(), 0, 1))
-  const wk = Math.ceil((((tmp - yr) / 86400000) + 1) / 7)
-  return `${tmp.getUTCFullYear()}-W${String(wk).padStart(2,'0')}`
+function createEmptyLevelMap() {
+  return LEVELS.reduce((acc, level) => {
+    acc[level.key] = { total: 0, closed: 0 }
+    return acc
+  }, {})
 }
 
-// ─── Build all computed data from equipment list ──────────────────────────────
-function computeAll(equipment) {
-  if (!equipment.length) return null
-  const now = new Date()
+function buildEquipmentLookup(equipment) {
+  const byId = new Map()
+  const byAlias = new Map()
 
-  // Status distribution
-  const statusCounts = new Map()
-  STATUS_ORDER.forEach(s => statusCounts.set(s, 0))
-  equipment.forEach(e => {
-    const s = normStatus(e)
-    statusCounts.set(s, (statusCounts.get(s) || 0) + 1)
+  equipment.forEach((item) => {
+    const ids = [item.externalId, item.tag, item.name]
+      .map(normalizeText)
+      .filter(Boolean)
+
+    ids.forEach((id) => {
+      if (!byAlias.has(id)) byAlias.set(id, item)
+    })
+
+    const externalId = normalizeText(item.externalId)
+    if (externalId) byId.set(externalId, item)
   })
 
-  const total = equipment.length
-  const doneCount = equipment.filter(e => DONE_STATUSES.has(normStatus(e))).length
-  const completionPct = +(doneCount / total * 100).toFixed(1)
+  return { byId, byAlias }
+}
 
-  // Equipment with risk scores
-  const withRisk = equipment.map(e => {
-    const stale = staleDays(e)
-    const score = computeRiskScore(e, stale)
-    return { ...e, _status: normStatus(e), _stale: stale, _score: score, _priority: riskPriority(score) }
-  }).sort((a, b) => b._score - a._score)
+function matchChecklistToEquipment(checklist, lookup) {
+  const assetId = normalizeText(checklist.assetId)
+  if (assetId && lookup.byId.has(assetId)) return lookup.byId.get(assetId)
+  if (assetId && lookup.byAlias.has(assetId)) return lookup.byAlias.get(assetId)
 
-  // Risk category counts (screenshot shows: Critical 204, High 0, Medium 0, Low 0, Blocking 204, Urgent 22, Stale 204)
-  const criticalCount  = withRisk.filter(e => e._score >= 80).length
-  const highCount      = withRisk.filter(e => e._score >= 60 && e._score < 80).length
-  const mediumCount    = withRisk.filter(e => e._score >= 40 && e._score < 60).length
-  const lowCount       = withRisk.filter(e => e._score < 40).length
-  const blockingCount  = withRisk.filter(e => (e.issueCount || 0) > 0).length
-  const urgentCount    = withRisk.filter(e => e._stale > 7 && e._score >= 60).length
-  const staleCount     = withRisk.filter(e => e._stale > 30).length
+  const checklistName = normalizeText(checklist.name)
+  if (!checklistName) return null
 
-  // Momentum chart — weekly cumulative
-  const createdDates = equipment.map(e => new Date(e.createdAt || e.created_at || e.syncedAt || now)).filter(d => !isNaN(d))
-  const minDate = createdDates.length ? new Date(Math.min(...createdDates)) : new Date(now.getTime() - 10 * 7 * 86400000)
-  const weekStarts = []
-  const cur = new Date(minDate)
-  cur.setDate(cur.getDate() - ((cur.getDay() + 6) % 7)) // prev Monday
-  while (cur <= now && weekStarts.length < 14) { weekStarts.push(new Date(cur)); cur.setDate(cur.getDate() + 7) }
+  const prefix = checklistName.split(' - ')[0]
+  if (prefix && lookup.byAlias.has(prefix)) return lookup.byAlias.get(prefix)
+  if (lookup.byAlias.has(checklistName)) return lookup.byAlias.get(checklistName)
+  return null
+}
 
-  const momentumData = weekStarts.map(wkStart => {
-    const wkEnd = new Date(wkStart.getTime() + 7 * 86400000)
-    const label = isoWeekLabel(wkStart).replace('20','')
-    const allByWeek = equipment.filter(e => new Date(e.createdAt || e.created_at || e.syncedAt || now) <= wkEnd).length
-    const doneByWeek = equipment.filter(e => {
-      const d = new Date(e.createdAt || e.created_at || e.syncedAt || now)
-      if (d > wkEnd) return false
-      const upd = new Date(e.updatedAt || e.updated_at || e.syncedAt || now)
-      return DONE_STATUSES.has(normStatus(e)) && upd <= wkEnd
-    }).length
-    return { week: label, all: allByWeek, cumulative: allByWeek - doneByWeek }
+function computeTracker(equipment, checklists) {
+  const lookup = buildEquipmentLookup(equipment)
+  const grouped = new Map()
+
+  equipment.forEach((item) => {
+    const discipline = normalizeDiscipline(item.discipline)
+    const type = getEquipmentLabel(item)
+    const groupKey = `${discipline}::${type}`
+
+    if (!grouped.has(groupKey)) {
+      grouped.set(groupKey, {
+        discipline,
+        type,
+        units: new Set(),
+        levels: createEmptyLevelMap(),
+      })
+    }
+
+    grouped.get(groupKey).units.add(item.externalId || item.tag || item.name || `${discipline}-${type}`)
   })
+
+  checklists.forEach((checklist) => {
+    const level = getChecklistLevel(checklist)
+    if (!level) return
+
+    const equipmentItem = matchChecklistToEquipment(checklist, lookup)
+    const discipline = normalizeDiscipline(equipmentItem?.discipline)
+    const type = equipmentItem ? getEquipmentLabel(equipmentItem) : 'Unmatched'
+    const groupKey = `${discipline}::${type}`
+
+    if (!grouped.has(groupKey)) {
+      grouped.set(groupKey, {
+        discipline,
+        type,
+        units: new Set(),
+        levels: createEmptyLevelMap(),
+      })
+    }
+
+    const target = grouped.get(groupKey)
+    target.levels[level].total += 1
+    if (isChecklistClosed(checklist)) target.levels[level].closed += 1
+    if (equipmentItem) target.units.add(equipmentItem.externalId || equipmentItem.tag || equipmentItem.name || `${discipline}-${type}`)
+  })
+
+  const rows = Array.from(grouped.values())
+    .map((item) => ({
+      ...item,
+      units: item.units.size,
+    }))
+    .sort((a, b) => {
+      const disciplineOrder = ['Electrical', 'Mechanical', 'Other']
+      const disciplineDiff = disciplineOrder.indexOf(a.discipline) - disciplineOrder.indexOf(b.discipline)
+      if (disciplineDiff !== 0) return disciplineDiff
+      return a.type.localeCompare(b.type)
+    })
+
+  const sections = ['Electrical', 'Mechanical', 'Other']
+    .map((discipline) => {
+      const sectionRows = rows.filter((row) => row.discipline === discipline)
+      if (!sectionRows.length) return null
+
+      const totals = createEmptyLevelMap()
+      let totalUnits = 0
+
+      sectionRows.forEach((row) => {
+        totalUnits += row.units
+        LEVELS.forEach((level) => {
+          totals[level.key].total += row.levels[level.key].total
+          totals[level.key].closed += row.levels[level.key].closed
+        })
+      })
+
+      return {
+        discipline,
+        rows: sectionRows,
+        totals,
+        totalUnits,
+      }
+    })
+    .filter(Boolean)
+
+  const trackedTypes = rows.filter((row) => row.type !== 'Unmatched').length
+  const matchedChecklistTotal = rows.reduce((sum, row) => (
+    sum + LEVELS.reduce((levelSum, level) => levelSum + row.levels[level.key].total, 0)
+  ), 0)
+  const matchedChecklistClosed = rows.reduce((sum, row) => (
+    sum + LEVELS.reduce((levelSum, level) => levelSum + row.levels[level.key].closed, 0)
+  ), 0)
+
+  const overallCompletion = matchedChecklistTotal > 0
+    ? Math.round((matchedChecklistClosed / matchedChecklistTotal) * 100)
+    : 0
+
+  const highLevel = sections.reduce((acc, section) => {
+    acc[section.discipline] = {
+      units: section.totalUnits,
+      types: section.rows.length,
+      completion: getLevelPercent(
+        LEVELS.reduce((sum, level) => sum + section.totals[level.key].closed, 0),
+        LEVELS.reduce((sum, level) => sum + section.totals[level.key].total, 0),
+      ),
+    }
+    return acc
+  }, {})
 
   return {
-    total, doneCount, completionPct, statusCounts, withRisk,
-    criticalCount, highCount, mediumCount, lowCount,
-    blockingCount, urgentCount, staleCount,
-    momentumData,
+    sections,
+    trackedUnits: equipment.length,
+    trackedTypes,
+    matchedChecklistTotal,
+    overallCompletion,
+    unmatchedRows: rows.filter((row) => row.type === 'Unmatched').length,
+    highLevel,
   }
 }
 
-// ─── Data hooks ───────────────────────────────────────────────────────────────
-function useEquipmentData() {
-  const { selectedProjects, activeProject } = useProject()
-  const targets = selectedProjects.length > 0 ? selectedProjects : (activeProject ? [activeProject] : [])
-  const [equipment, setEquipment] = useState([])
-  const [loading, setLoading]     = useState(false)
-  const [error, setError]         = useState(null)
-
-  useEffect(() => {
-    if (!targets.length) { setEquipment([]); return }
-    setLoading(true); setError(null)
-    Promise.all(targets.map(p =>
-      equipmentApi.getAll(p.externalId).then(r => r.data?.data || []).catch(() => [])
-    ))
-    .then(async results => {
-      const flat = results.flat()
-      if (flat.length > 0) { setEquipment(flat); setLoading(false); return }
-      // Fallback: live fetch when DB empty
-      try {
-        const live = await Promise.all(targets.map(p => equipmentApi.getLive(p.externalId).then(r => r.data?.data || []).catch(() => [])))
-        setEquipment(live.flat())
-      } catch { setEquipment([]) }
-      setLoading(false)
-    })
-    .catch(e => { setError(e.message); setEquipment([]); setLoading(false) })
-  }, [targets.map(p => p.externalId).join(',')])
-
-  return { equipment, loading, error }
+function getLevelPercent(closed, total) {
+  if (!total) return 0
+  return Math.round((closed / total) * 100)
 }
 
-function useMatrixData() {
-  const { selectedProjects, activeProject } = useProject()
-  const targets = selectedProjects.length > 0 ? selectedProjects : (activeProject ? [activeProject] : [])
-  const [matrix, setMatrix]         = useState(null)
-  const [matrixLoading, setLoading] = useState(false)
+function getCellStyle(percent, level) {
+  if (percent >= 100) {
+    return {
+      background: 'rgba(34, 197, 94, 0.18)',
+      color: '#bbf7d0',
+      border: 'rgba(34, 197, 94, 0.22)',
+    }
+  }
 
-  useEffect(() => {
-    if (!targets.length) { setMatrix(null); return }
-    setLoading(true)
-    equipmentApi.getMatrix(targets[0].externalId)
-      .then(r => { setMatrix(r.data?.data || null); setLoading(false) })
-      .catch(() => { setMatrix(null); setLoading(false) })
-  }, [targets.map(p => p.externalId).join(',')])
+  if (percent > 0) {
+    return {
+      background: 'rgba(250, 204, 21, 0.16)',
+      color: level.key === 'L4' ? '#dbeafe' : '#fde68a',
+      border: 'rgba(250, 204, 21, 0.2)',
+    }
+  }
 
-  return { matrix, matrixLoading }
+  return {
+    background: 'rgba(239, 68, 68, 0.16)',
+    color: '#fca5a5',
+    border: 'rgba(239, 68, 68, 0.2)',
+  }
 }
 
-// ─── Status & Timeline Tab ────────────────────────────────────────────────────
-const STATUS_COLORS = {
-  'Not Assigned':     '#475569',
-  'Asset Assigned':   '#64748b',
-  'Pre-Cx':           '#f59e0b',
-  'Cx In Progress':   '#3b82f6',
-  'Cx Complete':      '#22c55e',
-  'Ready For Startup':'#4ade80',
-  'In Service':       '#a78bfa',
-}
-
-function StatusTimeline({ data }) {
-  const total = data.total
+function SummaryCard({ icon: Icon, label, value, subValue, tone = '#38bdf8' }) {
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-      {/* KPI row */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 14 }}>
-        {[
-          { label: 'Tracked Equipment', value: data.total,            sub: 'Total in project',          color: '#60a5fa' },
-          { label: 'Completed',         value: data.doneCount,         sub: `${data.completionPct}% done`, color: '#4ade80' },
-          { label: 'In Progress',       value: data.statusCounts.get('Cx In Progress') || 0, sub: 'Currently commissioning', color: '#f59e0b' },
-          { label: 'Not Started',       value: (data.statusCounts.get('Not Assigned') || 0) + (data.statusCounts.get('Asset Assigned') || 0), sub: 'Awaiting commissioning', color: '#f87171' },
-        ].map(({ label, value, sub, color }) => (
-          <div key={label} style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 12, padding: '16px 18px' }}>
-            <div style={{ fontSize: 10, color: '#475569', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 6 }}>{label}</div>
-            <div style={{ fontSize: 30, fontWeight: 800, color, lineHeight: 1 }}>{value}</div>
-            <div style={{ fontSize: 11, color: '#64748b', marginTop: 4 }}>{sub}</div>
-          </div>
-        ))}
+    <div
+      style={{
+        background: 'linear-gradient(180deg, rgba(17, 24, 39, 0.92), rgba(15, 23, 42, 0.94))',
+        border: '1px solid rgba(255,255,255,0.07)',
+        borderRadius: 18,
+        padding: '16px 18px',
+        display: 'flex',
+        alignItems: 'center',
+        gap: 14,
+      }}
+    >
+      <div
+        style={{
+          width: 42,
+          height: 42,
+          borderRadius: 14,
+          background: `${tone}1f`,
+          color: tone,
+          border: `1px solid ${tone}33`,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          flexShrink: 0,
+        }}
+      >
+        <Icon size={18} />
       </div>
-
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
-        {/* Status breakdown */}
-        <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 12, padding: '18px 20px' }}>
-          <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 2 }}>Status Progression</div>
-          <div style={{ fontSize: 11, color: '#64748b', marginBottom: 18 }}>Equipment spread across commissioning stages</div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-            {STATUS_ORDER.map(s => {
-              const count = data.statusCounts.get(s) || 0
-              const pct   = total > 0 ? Math.round(count / total * 100) : 0
-              const color = STATUS_COLORS[s] || '#475569'
-              return (
-                <div key={s}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                      <span style={{ width: 8, height: 8, borderRadius: '50%', background: color, display: 'inline-block', flexShrink: 0 }} />
-                      <span style={{ fontSize: 12, color: 'var(--text-primary)', fontWeight: 500 }}>{s}</span>
-                    </div>
-                    <span style={{ fontSize: 12, fontWeight: 700, color: count > 0 ? color : '#334155' }}>{count}</span>
-                  </div>
-                  <div style={{ height: 5, background: 'var(--divider)', borderRadius: 3, overflow: 'hidden' }}>
-                    <div style={{ height: '100%', width: `${pct}%`, background: color, borderRadius: 3, transition: 'width 0.5s ease' }} />
-                  </div>
-                </div>
-              )
-            })}
-          </div>
-        </div>
-
-        {/* Momentum chart */}
-        <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 12, padding: '18px 20px' }}>
-          <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 2 }}>Equipment Momentum</div>
-          <div style={{ fontSize: 11, color: '#64748b', marginBottom: 14 }}>Completion rhythm — all vs remaining</div>
-          <ResponsiveContainer width="100%" height={230}>
-            <LineChart data={data.momentumData} margin={{ top: 4, right: 8, bottom: 0, left: -20 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="var(--divider)" />
-              <XAxis dataKey="week" tick={{ fill: '#64748b', fontSize: 9 }} axisLine={false} tickLine={false} interval="preserveStartEnd" />
-              <YAxis tick={{ fill: '#64748b', fontSize: 9 }} axisLine={false} tickLine={false} />
-              <Tooltip
-                contentStyle={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 8, fontSize: 11 }}
-                labelStyle={{ color: '#64748b', marginBottom: 4 }}
-              />
-              <Line type="monotone" dataKey="all"        name="All tracked"  stroke="#818cf8" strokeWidth={2} dot={false} />
-              <Line type="monotone" dataKey="cumulative" name="Remaining"     stroke="#60a5fa" strokeWidth={2} dot={false} />
-            </LineChart>
-          </ResponsiveContainer>
-        </div>
+      <div style={{ minWidth: 0 }}>
+        <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.1em', color: '#64748b', fontWeight: 700 }}>{label}</div>
+        <div style={{ fontSize: 24, lineHeight: 1.05, color: '#f8fafc', fontWeight: 800, marginTop: 4 }}>{value}</div>
+        <div style={{ fontSize: 11, color: '#8ea4c8', marginTop: 4 }}>{subValue}</div>
       </div>
     </div>
   )
 }
 
-// ─── Risk Analytics Tab ───────────────────────────────────────────────────────
-const PRIORITY_PILL = {
-  'P1 - Critical': { bg: 'rgba(239,68,68,0.15)',  border: 'rgba(239,68,68,0.35)',  text: '#f87171' },
-  'P2 - High':     { bg: 'rgba(249,115,22,0.15)', border: 'rgba(249,115,22,0.35)', text: '#fb923c' },
-  'P3 - Medium':   { bg: 'rgba(234,179,8,0.15)',  border: 'rgba(234,179,8,0.35)',  text: '#fbbf24' },
-  'P4 - Low':      { bg: 'rgba(34,197,94,0.15)',  border: 'rgba(34,197,94,0.35)',  text: '#4ade80' },
-}
-
-function RiskAnalytics({ data }) {
-  const [search, setSearch]   = useState('')
-  const [sortBy, setSortBy]   = useState('Risk Score')
-  const [topN,   setTopN]     = useState('25')
-  const [staleCutoff, setStaleCutoff] = useState('14 days')
-
-  const SORT_OPTIONS  = ['Risk Score', 'Stale Days', 'Issues']
-  const TOP_OPTIONS   = ['10','25','50','100','All']
-  const STALE_OPTIONS = ['7 days','14 days','30 days','60 days','90 days']
-
-  const filteredRisk = useMemo(() => {
-    let list = data.withRisk
-    if (search.trim()) {
-      const q = search.toLowerCase()
-      list = list.filter(e => (e.name||'').toLowerCase().includes(q) || (e.tag||'').toLowerCase().includes(q) || (e.externalId||'').toLowerCase().includes(q))
-    }
-    if (sortBy === 'Stale Days') list = [...list].sort((a,b) => b._stale - a._stale)
-    else if (sortBy === 'Issues') list = [...list].sort((a,b) => (b.issueCount||0) - (a.issueCount||0))
-    const n = topN === 'All' ? list.length : parseInt(topN)
-    return list.slice(0, n)
-  }, [data.withRisk, search, sortBy, topN])
-
-  const staleDaysNum = parseInt(staleCutoff)
-  const staleFiltered = filteredRisk.filter(e => e._stale >= staleDaysNum)
+function SectionTable({ section, onOpenMatrix }) {
+  const hasOverflow = section.rows.length > 12
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-      {/* Header card */}
-      <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 12, padding: '16px 20px' }}>
-        <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 2 }}>Equipment Risk Analytics</div>
-        <div style={{ fontSize: 11, color: '#64748b', marginBottom: 14 }}>Identify at-risk equipment using issues, progression, and stale duration</div>
-
-        {/* Summary row */}
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <span style={{ fontSize: 22, fontWeight: 800, color: 'var(--text-primary)' }}>{data.total}</span>
-            <span style={{ fontSize: 11, padding: '3px 10px', borderRadius: 99, background: 'rgba(96,165,250,0.12)', border: '1px solid rgba(96,165,250,0.25)', color: '#60a5fa', fontWeight: 600 }}>equipment tracked</span>
-          </div>
-          {/* Risk level pills row */}
-          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-            {[
-              { label: `Critical ${data.criticalCount}`, bg: 'rgba(239,68,68,0.12)',  border: 'rgba(239,68,68,0.3)',  color: '#f87171' },
-              { label: `High ${data.highCount}`,         bg: 'rgba(249,115,22,0.12)', border: 'rgba(249,115,22,0.3)', color: '#fb923c' },
-              { label: `Medium ${data.mediumCount}`,     bg: 'rgba(234,179,8,0.12)',  border: 'rgba(234,179,8,0.3)',  color: '#fbbf24' },
-              { label: `Low ${data.lowCount}`,           bg: 'rgba(34,197,94,0.12)',  border: 'rgba(34,197,94,0.3)',  color: '#4ade80' },
-              { label: `Blocking ${data.blockingCount}`, bg: 'rgba(168,85,247,0.12)', border: 'rgba(168,85,247,0.3)', color: '#c084fc' },
-              { label: `Urgent ${data.urgentCount}`,     bg: 'rgba(239,68,68,0.12)',  border: 'rgba(239,68,68,0.3)',  color: '#f87171' },
-              { label: `Stale ${data.staleCount}`,       bg: 'rgba(100,116,139,0.12)',border: 'rgba(100,116,139,0.3)',color: '#94a3b8' },
-            ].map(({ label, bg, border, color }) => (
-              <span key={label} style={{ fontSize: 11, fontWeight: 600, padding: '3px 10px', borderRadius: 99, background: bg, border: `1px solid ${border}`, color }}>{label}</span>
-            ))}
+    <div
+      style={{
+        background: 'linear-gradient(180deg, rgba(17,24,39,0.94), rgba(15,23,42,0.94))',
+        border: '1px solid rgba(255,255,255,0.08)',
+        borderRadius: 18,
+        overflow: 'hidden',
+        minWidth: 0,
+      }}
+    >
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 12,
+          padding: '14px 16px',
+          borderBottom: '1px solid rgba(255,255,255,0.06)',
+          background: 'linear-gradient(90deg, rgba(37,99,235,0.22), rgba(29,78,216,0.06))',
+        }}
+      >
+        <div>
+          <div style={{ fontSize: 14, fontWeight: 800, color: '#f8fafc' }}>{section.discipline} Equipment Tracker</div>
+          <div style={{ fontSize: 12, color: '#8ea4c8', marginTop: 4 }}>
+            {section.totalUnits} units • {section.rows.length} equipment types
           </div>
         </div>
-
-        {/* Filters */}
-        <div style={{ display: 'flex', gap: 8, marginTop: 14, flexWrap: 'wrap', alignItems: 'center' }}>
-          <div style={{ position: 'relative', flex: 1, minWidth: 160, maxWidth: 240 }}>
-            <Search size={12} style={{ position: 'absolute', left: 9, top: '50%', transform: 'translateY(-50%)', color: '#64748b' }} />
-            <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search equipment..."
-              style={{ width: '100%', boxSizing: 'border-box', background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border)', borderRadius: 7, padding: '6px 10px 6px 28px', fontSize: 12, color: 'var(--text-primary)', outline: 'none' }} />
-          </div>
-          {[
-            { label: 'Sort', value: sortBy, options: SORT_OPTIONS, set: setSortBy },
-            { label: 'Top',  value: topN,   options: TOP_OPTIONS,  set: setTopN   },
-            { label: 'Stale',value: staleCutoff, options: STALE_OPTIONS, set: setStaleCutoff },
-          ].map(({ label, value, options, set }) => (
-            <select key={label} value={value} onChange={e => set(e.target.value)}
-              style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border)', borderRadius: 7, padding: '6px 10px', fontSize: 12, color: 'var(--text-primary)', cursor: 'pointer', outline: 'none' }}>
-              {options.map(o => <option key={o} value={o}>{o}</option>)}
-            </select>
-          ))}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+          {LEVELS.map((level) => {
+            const percent = getLevelPercent(section.totals[level.key].closed, section.totals[level.key].total)
+            return (
+              <span
+                key={level.key}
+                style={{
+                  padding: '6px 10px',
+                  borderRadius: 999,
+                  background: level.headerBackground,
+                  border: `1px solid ${level.color}33`,
+                  color: level.color,
+                  fontSize: 11,
+                  fontWeight: 800,
+                }}
+              >
+                {level.label} {percent}%
+              </span>
+            )
+          })}
         </div>
       </div>
 
-      {/* Equipment risk cards list */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 0, background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 12, overflow: 'hidden' }}>
-        {filteredRisk.map((eq, i) => {
-          const lv      = riskLevel(eq._score)
-          const pri     = PRIORITY_PILL[eq._priority] || PRIORITY_PILL['P4 - Low']
-          const isStale = eq._stale >= staleDaysNum
-          const systemInfo = [eq.equipmentType, eq.discipline, eq.assignedTo || 'Unassigned'].filter(Boolean).join(' | ')
-          return (
-            <div key={eq.id || eq.externalId || i} style={{
-              display: 'flex', alignItems: 'center', gap: 16,
-              padding: '14px 20px',
-              borderBottom: i < filteredRisk.length - 1 ? '1px solid var(--border-subtle)' : 'none',
-              background: i % 2 === 1 ? 'rgba(255,255,255,0.012)' : 'transparent',
-              transition: 'background 0.12s',
-            }}>
-              {/* Risk score circle */}
-              <div style={{
-                width: 52, height: 52, borderRadius: '50%', flexShrink: 0,
-                border: `2px solid ${lv.color}`,
-                background: lv.bg,
-                display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
-              }}>
-                <span style={{ fontSize: 15, fontWeight: 800, color: lv.color, lineHeight: 1 }}>{eq._score}</span>
-                <span style={{ fontSize: 8, color: lv.color, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>risk</span>
-              </div>
+      <div style={{ overflowX: 'auto', maxHeight: hasOverflow ? 760 : 'none', overflowY: hasOverflow ? 'auto' : 'visible' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 620 }}>
+          <thead>
+            <tr style={{ background: 'rgba(255,255,255,0.02)' }}>
+              <th style={tableHeadStyle('left', 220)}>Equipment Type</th>
+              <th style={tableHeadStyle('left', 72)}>Units</th>
+              {LEVELS.map((level) => (
+                <th
+                  key={level.key}
+                  style={{
+                    ...tableHeadStyle('left', 94),
+                    background: level.headerBackground,
+                    color: level.color,
+                    borderLeft: '1px solid rgba(255,255,255,0.06)',
+                  }}
+                >
+                  {level.label}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {section.rows.map((row, index) => (
+              <tr key={`${section.discipline}-${row.type}`} style={{ background: index % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.018)' }}>
+                <td style={tableCellStyle(220, true)}>
+                  <button
+                    onClick={() => onOpenMatrix(row.type)}
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: 8,
+                      padding: 0,
+                      border: 'none',
+                      background: 'transparent',
+                      color: '#f8fafc',
+                      fontSize: 14,
+                      fontWeight: 800,
+                      fontFamily: 'inherit',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    <span style={{ textAlign: 'left' }}>{row.type}</span>
+                    <ChevronRight size={15} color="#60a5fa" />
+                  </button>
+                </td>
+                <td style={tableCellStyle(72)}>{row.units}</td>
+                {LEVELS.map((level) => {
+                  const percent = getLevelPercent(row.levels[level.key].closed, row.levels[level.key].total)
+                  const cellStyle = getCellStyle(percent, level)
+                  return (
+                    <td key={level.key} style={{ ...tableCellStyle(94), padding: 0 }}>
+                      <div
+                        style={{
+                          display: 'flex',
+                          flexDirection: 'column',
+                          alignItems: 'flex-start',
+                          justifyContent: 'center',
+                          gap: 3,
+                          minHeight: 62,
+                          padding: '10px 12px',
+                          background: cellStyle.background,
+                          borderLeft: `1px solid ${cellStyle.border}`,
+                        }}
+                      >
+                        <div style={{ fontSize: 15, fontWeight: 800, color: cellStyle.color }}>{percent}%</div>
+                        <div style={{ fontSize: 10, color: '#d7e4f7' }}>
+                          {row.levels[level.key].closed}/{row.levels[level.key].total} closed
+                        </div>
+                      </div>
+                    </td>
+                  )
+                })}
+              </tr>
+            ))}
+            <tr style={{ background: 'rgba(37,99,235,0.08)' }}>
+              <td style={tableCellStyle(220, true, true)}>{section.discipline.toUpperCase()} AVG</td>
+              <td style={tableCellStyle(72, false, true)}>{section.totalUnits}</td>
+              {LEVELS.map((level) => {
+                const percent = getLevelPercent(section.totals[level.key].closed, section.totals[level.key].total)
+                return (
+                  <td key={level.key} style={{ ...tableCellStyle(94, false, true), color: percent >= 100 ? '#bbf7d0' : percent > 0 ? '#fde68a' : '#fca5a5' }}>
+                    {percent}%
+                  </td>
+                )
+              })}
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      {hasOverflow && (
+        <div
+          style={{
+            padding: '10px 16px',
+            borderTop: '1px solid rgba(255,255,255,0.06)',
+            background: 'rgba(255,255,255,0.02)',
+            color: '#8ea4c8',
+            fontSize: 12,
+            fontWeight: 700,
+          }}
+        >
+          Showing all equipment types. Scroll inside this table after the first 12 rows.
+        </div>
+      )}
+    </div>
+  )
+}
 
-              {/* Name + metadata */}
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 3 }}>{eq.name || eq.tag || eq.externalId || 'Unnamed'}</div>
-                <div style={{ fontSize: 11, color: '#64748b', marginBottom: 6 }}>{systemInfo}</div>
-                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                  <span style={{ fontSize: 10, padding: '2px 8px', borderRadius: 99, background: 'rgba(255,255,255,0.06)', border: '1px solid var(--border)', color: '#94a3b8', fontWeight: 600 }}>{eq._status}</span>
-                  <span style={{ fontSize: 10, padding: '2px 8px', borderRadius: 99, background: pri.bg, border: `1px solid ${pri.border}`, color: pri.text, fontWeight: 600 }}>{eq._priority}</span>
-                  {isStale && (
-                    <span style={{ fontSize: 10, padding: '2px 8px', borderRadius: 99, background: 'rgba(100,116,139,0.12)', border: '1px solid rgba(100,116,139,0.3)', color: '#94a3b8', fontWeight: 600 }}>{eq._stale}d stale</span>
-                  )}
-                </div>
-              </div>
+function tableHeadStyle(textAlign, minWidth) {
+  return {
+    padding: '12px 14px',
+    textAlign,
+    minWidth,
+    fontSize: 11,
+    fontWeight: 800,
+    letterSpacing: '0.08em',
+    textTransform: 'uppercase',
+    color: '#dbe7fb',
+    borderBottom: '1px solid rgba(255,255,255,0.06)',
+  }
+}
 
-              {/* Stats: issues | stale | quality | complete */}
-              <div style={{ display: 'flex', gap: 24, flexShrink: 0 }}>
-                {[
-                  { label: 'issues',   value: eq.issueCount    || 0 },
-                  { label: 'stale',    value: eq._stale },
-                  { label: 'quality',  value: 100 - eq._score  },
-                  { label: 'complete', value: `${eq.checklistCount > 0 ? Math.round((eq.checklistCount - (eq.issueCount||0)) / eq.checklistCount * 100) : 0}%` },
-                ].map(({ label, value }) => (
-                  <div key={label} style={{ textAlign: 'center' }}>
-                    <div style={{ fontSize: 15, fontWeight: 800, color: 'var(--text-primary)', lineHeight: 1 }}>{value}</div>
-                    <div style={{ fontSize: 9, color: '#64748b', marginTop: 2, textTransform: 'uppercase', letterSpacing: '0.05em' }}>{label}</div>
+function tableCellStyle(minWidth, strong = false, footer = false) {
+  return {
+    minWidth,
+    padding: '12px 14px',
+    borderBottom: footer ? 'none' : '1px solid rgba(255,255,255,0.05)',
+    color: strong ? '#f8fafc' : '#dbe7fb',
+    fontSize: strong ? 13 : 12,
+    fontWeight: strong ? 800 : footer ? 800 : 600,
+    verticalAlign: 'middle',
+  }
+}
+
+function isChecklistInactive(checklist) {
+  const normalized = normalizeText(checklist.status).replace(/\s+/g, '_').replace(/-/g, '_')
+  if (COMPLETE_STATUSES.has(normalized) || normalized === 'cancelled' || normalized === 'canceled') return false
+  const updated = new Date(checklist.updatedAt || checklist.createdAt || 0)
+  if (isNaN(updated)) return false
+  return ((Date.now() - updated.getTime()) / 86400000) >= 14
+}
+
+function formatDateLabel(value) {
+  if (!value) return '—'
+  const parsed = new Date(value)
+  if (isNaN(parsed)) return '—'
+  return parsed.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
+}
+
+function getChecklistAgeDays(checklist) {
+  const start = new Date(checklist.updatedAt || checklist.createdAt || 0)
+  if (isNaN(start)) return 0
+  return Math.max(0, Math.round((Date.now() - start.getTime()) / 86400000))
+}
+
+function getChecklistDurationDays(checklist) {
+  const start = new Date(checklist.createdAt || 0)
+  const end = new Date(checklist.actualFinishDate || checklist.updatedAt || 0)
+  if (isNaN(start) || isNaN(end)) return 0
+  return Math.max(0, Math.round((end.getTime() - start.getTime()) / 86400000))
+}
+
+function getIssueAssetKey(issue) {
+  return normalizeText(issue.assetId || issue.assetExternalId || issue.equipmentId || issue.linkedAssetId || issue.assetName)
+}
+
+function getIssueAssetLabel(issue) {
+  return issue.assetName || issue.assetTag || issue.assetId || issue.assetExternalId || issue.equipmentName || 'Unassigned Asset'
+}
+
+function buildChecklistUrl(projectId, checklistExternalId) {
+  if (!projectId || !checklistExternalId) return null
+  return `https://tq.cxalloy.com/project/${projectId}/checklists/${checklistExternalId}`
+}
+
+function buildEquipmentUrl(projectId, equipmentExternalId) {
+  if (!projectId || !equipmentExternalId) return null
+  return `https://tq.cxalloy.com/project/${projectId}/equipment/${equipmentExternalId}`
+}
+
+function buildIssueLookup(issues) {
+  const byAsset = new Map()
+
+  issues.forEach((issue) => {
+    const key = getIssueAssetKey(issue)
+    if (!key) return
+
+    const current = byAsset.get(key) || {
+      label: getIssueAssetLabel(issue),
+      total: 0,
+      open: 0,
+      closed: 0,
+    }
+
+    current.total += 1
+    if (CLOSED_ISSUE_STATUSES.has(normalizeText(issue.status).replace(/\s+/g, '_').replace(/-/g, '_'))) {
+      current.closed += 1
+    } else {
+      current.open += 1
+    }
+
+    if (!current.label || current.label === 'Unassigned Asset') {
+      current.label = getIssueAssetLabel(issue)
+    }
+
+    byAsset.set(key, current)
+  })
+
+  return byAsset
+}
+
+function InsightShell({ icon: Icon, title, subtitle, accent, children }) {
+  return (
+    <section
+      style={{
+        background: 'linear-gradient(180deg, rgba(17,24,39,0.94), rgba(15,23,42,0.96))',
+        border: '1px solid rgba(255,255,255,0.08)',
+        borderRadius: 18,
+        overflow: 'hidden',
+        minWidth: 0,
+      }}
+    >
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 12,
+          padding: '16px 18px 12px',
+          borderBottom: '1px solid rgba(255,255,255,0.06)',
+        }}
+      >
+        <div
+          style={{
+            width: 38,
+            height: 38,
+            borderRadius: 14,
+            background: `${accent}18`,
+            border: `1px solid ${accent}33`,
+            color: accent,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            flexShrink: 0,
+          }}
+        >
+          <Icon size={17} />
+        </div>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ color: '#f8fafc', fontSize: 16, fontWeight: 800 }}>{title}</div>
+          <div style={{ color: '#8ea4c8', fontSize: 12, marginTop: 3 }}>{subtitle}</div>
+        </div>
+      </div>
+      <div style={{ padding: 14 }}>{children}</div>
+    </section>
+  )
+}
+
+function EmptyInsight({ text }) {
+  return (
+    <div
+      style={{
+        padding: '18px 14px',
+        borderRadius: 14,
+        border: '1px dashed rgba(255,255,255,0.1)',
+        color: '#8ea4c8',
+        fontSize: 12,
+      }}
+    >
+      {text}
+    </div>
+  )
+}
+
+function MetricPill({ label, value, tone = '#60a5fa' }) {
+  return (
+    <span
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 6,
+        padding: '5px 9px',
+        borderRadius: 999,
+        background: `${tone}12`,
+        border: `1px solid ${tone}2b`,
+        color: '#dbe7fb',
+        fontSize: 11,
+        fontWeight: 700,
+      }}
+    >
+      <span style={{ color: '#8ea4c8' }}>{label}</span>
+      <span style={{ color: tone }}>{value}</span>
+    </span>
+  )
+}
+
+function downloadCsv(filename, headers, rows) {
+  const escape = (value) => `"${String(value ?? '').replace(/"/g, '""')}"`
+  const csv = [
+    headers.map(escape).join(','),
+    ...rows.map((row) => row.map(escape).join(',')),
+  ].join('\n')
+
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+  URL.revokeObjectURL(url)
+}
+
+function StaleChecklistPanel({ items, expandedId, onToggle, projectId }) {
+  return (
+    <InsightShell
+      icon={AlertTriangle}
+      title="Stale Checklists"
+      subtitle="Open checklists untouched for 14+ days. Click a row to expand."
+      accent="#f59e0b"
+    >
+      {!items.length ? (
+        <EmptyInsight text="No stale checklist items in the current selection." />
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {items.map((item) => {
+            const expanded = expandedId === item.externalId
+            const link = buildChecklistUrl(projectId, item.externalId)
+            return (
+              <div
+                key={item.externalId || item.name}
+                style={{
+                  borderRadius: 14,
+                  border: '1px solid rgba(245,158,11,0.18)',
+                  background: expanded ? 'rgba(245,158,11,0.08)' : 'rgba(255,255,255,0.03)',
+                  overflow: 'hidden',
+                }}
+              >
+                <button
+                  onClick={() => onToggle(expanded ? null : item.externalId)}
+                  style={{
+                    width: '100%',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    gap: 10,
+                    padding: '12px 14px',
+                    background: 'transparent',
+                    border: 'none',
+                    cursor: 'pointer',
+                    color: 'inherit',
+                    fontFamily: 'inherit',
+                  }}
+                >
+                  <div style={{ minWidth: 0, textAlign: 'left' }}>
+                    <div style={{ fontSize: 13, fontWeight: 800, color: '#f8fafc', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                      {item.name || item.externalId || 'Unnamed checklist'}
+                    </div>
+                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 8 }}>
+                      <MetricPill label="Age" value={`${item.ageDays}d`} tone="#f59e0b" />
+                      <MetricPill label="Issues" value={item.issueCount} tone="#f87171" />
+                      <MetricPill label="Status" value={item.status || 'Unknown'} tone="#60a5fa" />
+                    </div>
                   </div>
-                ))}
+                  <ChevronDown
+                    size={16}
+                    color="#fbbf24"
+                    style={{ transform: expanded ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 0.16s ease' }}
+                  />
+                </button>
+
+                {expanded && (
+                  <div style={{ padding: '0 14px 14px', display: 'flex', flexDirection: 'column', gap: 10 }}>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 10 }}>
+                      <div style={detailTileStyle}>
+                        <div style={detailLabelStyle}>Last Updated</div>
+                        <div style={detailValueStyle}>{formatDateLabel(item.updatedAt || item.createdAt)}</div>
+                      </div>
+                      <div style={detailTileStyle}>
+                        <div style={detailLabelStyle}>Equipment</div>
+                        <div style={detailValueStyle}>{item.assetLabel || 'Unlinked'}</div>
+                      </div>
+                    </div>
+
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
+                      <div style={{ fontSize: 12, color: '#8ea4c8' }}>
+                        Type: <span style={{ color: '#dbe7fb', fontWeight: 700 }}>{item.checklistType || item.tagLevel || 'Unspecified'}</span>
+                      </div>
+                      {link && (
+                        <a
+                          href={link}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: 8,
+                            padding: '8px 12px',
+                            borderRadius: 12,
+                            textDecoration: 'none',
+                            background: 'rgba(59,130,246,0.14)',
+                            border: '1px solid rgba(59,130,246,0.28)',
+                            color: '#93c5fd',
+                            fontSize: 12,
+                            fontWeight: 800,
+                          }}
+                        >
+                          <ExternalLink size={14} />
+                          Open in CxAlloy
+                        </a>
+                      )}
+                    </div>
+                  </div>
+                )}
               </div>
-            </div>
+            )
+          })}
+        </div>
+      )}
+    </InsightShell>
+  )
+}
+
+function ExpandableInsightList({ icon, title, subtitle, accent, items, emptyText, expandedKey, onToggle, getKey, renderCollapsedPills, renderExpandedMeta, getLink }) {
+  return (
+    <InsightShell icon={icon} title={title} subtitle={subtitle} accent={accent}>
+      {!items.length ? (
+        <EmptyInsight text={emptyText} />
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {items.map((item, index) => {
+            const key = getKey(item, index)
+            const expanded = expandedKey === key
+            const link = getLink ? getLink(item) : null
+
+            return (
+              <div
+                key={`${title}-${key}`}
+                style={{
+                  borderRadius: 14,
+                  border: `1px solid ${accent}20`,
+                  background: expanded ? `${accent}10` : 'rgba(255,255,255,0.03)',
+                  overflow: 'hidden',
+                }}
+              >
+                <button
+                  onClick={() => onToggle(expanded ? null : key)}
+                  style={{
+                    width: '100%',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    gap: 10,
+                    padding: '12px 14px',
+                    background: 'transparent',
+                    border: 'none',
+                    cursor: 'pointer',
+                    color: 'inherit',
+                    fontFamily: 'inherit',
+                  }}
+                >
+                  <div style={{ minWidth: 0, textAlign: 'left' }}>
+                    <div style={{ color: '#f8fafc', fontSize: 13, fontWeight: 800, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                      {item.label}
+                    </div>
+                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 8 }}>
+                      {renderCollapsedPills(item)}
+                    </div>
+                  </div>
+                  <ChevronDown
+                    size={16}
+                    color={accent}
+                    style={{ transform: expanded ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 0.16s ease' }}
+                  />
+                </button>
+
+                {expanded && (
+                  <div style={{ padding: '0 14px 14px', display: 'flex', flexDirection: 'column', gap: 10 }}>
+                    {renderExpandedMeta(item)}
+                    {link && (
+                      <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                        <a
+                          href={link}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: 8,
+                            padding: '8px 12px',
+                            borderRadius: 12,
+                            textDecoration: 'none',
+                            background: 'rgba(59,130,246,0.14)',
+                            border: '1px solid rgba(59,130,246,0.28)',
+                            color: '#93c5fd',
+                            fontSize: 12,
+                            fontWeight: 800,
+                          }}
+                        >
+                          <ExternalLink size={14} />
+                          Open in CxAlloy
+                        </a>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      )}
+    </InsightShell>
+  )
+}
+
+const detailTileStyle = {
+  padding: '10px 12px',
+  borderRadius: 12,
+  background: 'rgba(255,255,255,0.03)',
+  border: '1px solid rgba(255,255,255,0.06)',
+}
+
+const detailLabelStyle = {
+  fontSize: 10,
+  color: '#64748b',
+  textTransform: 'uppercase',
+  letterSpacing: '0.08em',
+  fontWeight: 800,
+}
+
+const detailValueStyle = {
+  fontSize: 12,
+  color: '#f8fafc',
+  fontWeight: 700,
+  marginTop: 5,
+}
+
+export default function AssetReadinessPage() {
+  const { selectedProjects, activeProject } = useProject()
+  const targets = selectedProjects.length > 0 ? selectedProjects : (activeProject ? [activeProject] : [])
+  const primaryProjectId = targets[0]?.externalId
+  const targetKey = targets.map((project) => project.externalId || project.id).join(',')
+  const [equipment, setEquipment] = useState([])
+  const [checklists, setChecklists] = useState([])
+  const [issues, setIssues] = useState([])
+  const [matrix, setMatrix] = useState(null)
+  const [loading, setLoading] = useState(false)
+  const [matrixLoading, setMatrixLoading] = useState(false)
+  const [error, setError] = useState('')
+  const [activeTab, setActiveTab] = useState('tracker')
+  const [matrixSearch, setMatrixSearch] = useState('')
+  const [expandedChecklistId, setExpandedChecklistId] = useState(null)
+  const [expandedOutlierId, setExpandedOutlierId] = useState(null)
+  const [expandedIssueEquipmentId, setExpandedIssueEquipmentId] = useState(null)
+
+  useEffect(() => {
+    let cancelled = false
+
+    async function load() {
+      if (!targets.length) {
+        setEquipment([])
+        setChecklists([])
+        setIssues([])
+        return
+      }
+
+      setLoading(true)
+      setError('')
+
+      try {
+        const [equipmentResults, checklistResults, issueResults] = await Promise.all([
+          Promise.all(targets.map((project) => equipmentApi.getAll(project.externalId).then((response) => response.data?.data || []))),
+          Promise.all(targets.map((project) => checklistsApi.getAll(project.externalId).then((response) => response.data?.data || []))),
+          Promise.all(targets.map((project) => issuesApi.getAll(project.externalId).then((response) => response.data?.data || []))),
+        ])
+
+        if (cancelled) return
+
+        setEquipment(equipmentResults.flat())
+        setChecklists(checklistResults.flat())
+        setIssues(issueResults.flat())
+      } catch (loadError) {
+        if (cancelled) return
+        setError(loadError.response?.data?.message || loadError.message || 'Failed to load checklist flow tracker.')
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    }
+
+    load()
+    return () => {
+      cancelled = true
+    }
+  }, [targetKey])
+
+  useEffect(() => {
+    let cancelled = false
+
+    async function loadMatrix() {
+      if (!targets.length) {
+        setMatrix(null)
+        return
+      }
+
+      setMatrixLoading(true)
+      try {
+        const response = await equipmentApi.getMatrix(targets[0].externalId)
+        if (!cancelled) setMatrix(response.data?.data || null)
+      } catch {
+        if (!cancelled) setMatrix(null)
+      } finally {
+        if (!cancelled) setMatrixLoading(false)
+      }
+    }
+
+    loadMatrix()
+    return () => {
+      cancelled = true
+    }
+  }, [targetKey])
+
+  const tracker = useMemo(() => computeTracker(equipment, checklists), [equipment, checklists])
+  const issueLookup = useMemo(() => buildIssueLookup(issues), [issues])
+  const highLevel = tracker?.highLevel || {}
+  const electrical = highLevel.Electrical || { units: 0, types: 0, completion: 0 }
+  const mechanical = highLevel.Mechanical || { units: 0, types: 0, completion: 0 }
+  const flowInsights = useMemo(() => {
+    const equipmentLookup = buildEquipmentLookup(equipment)
+    const checklistCountsByAsset = new Map()
+
+    checklists.forEach((checklist) => {
+      const matchedEquipment = matchChecklistToEquipment(checklist, equipmentLookup)
+      const key = normalizeText(
+        checklist.assetId
+          || matchedEquipment?.externalId
+          || matchedEquipment?.tag
+          || matchedEquipment?.name
+      )
+      if (!key) return
+      checklistCountsByAsset.set(key, (checklistCountsByAsset.get(key) || 0) + 1)
+    })
+
+    const staleChecklists = checklists
+      .filter(isChecklistInactive)
+      .map((checklist) => {
+        const matchedEquipment = matchChecklistToEquipment(checklist, equipmentLookup)
+        const assetKey = normalizeText(
+          checklist.assetId
+            || matchedEquipment?.externalId
+            || matchedEquipment?.tag
+            || matchedEquipment?.name
+        )
+        const issueStats = assetKey ? issueLookup.get(assetKey) : null
+        return {
+          ...checklist,
+          ageDays: getChecklistAgeDays(checklist),
+          issueCount: issueStats?.total || 0,
+          assetLabel: matchedEquipment?.name || matchedEquipment?.tag || getEquipmentLabel(matchedEquipment || {}) || checklist.assetId || null,
+        }
+      })
+      .sort((a, b) => b.ageDays - a.ageDays)
+      .slice(0, 6)
+
+    const checklistOutliers = checklists
+      .map((checklist) => {
+        const matchedEquipment = matchChecklistToEquipment(checklist, equipmentLookup)
+        const durationDays = isChecklistClosed(checklist)
+          ? getChecklistDurationDays(checklist)
+          : getChecklistAgeDays(checklist)
+        return {
+          externalId: checklist.externalId,
+          label: checklist.name || checklist.externalId || 'Unnamed checklist',
+          value: `${durationDays}d`,
+          durationDays,
+          meta: isChecklistClosed(checklist)
+            ? `Closed ${formatDateLabel(checklist.actualFinishDate || checklist.updatedAt)}`
+            : `Open for ${durationDays} days`,
+          assetLabel: matchedEquipment?.name || matchedEquipment?.tag || checklist.assetId || 'Unlinked',
+        }
+      })
+      .filter((item) => item.durationDays > 0)
+      .sort((a, b) => parseInt(b.value, 10) - parseInt(a.value, 10))
+      .slice(0, 5)
+
+    const topIssueEquipment = Array.from(issueLookup.entries())
+      .map(([assetKey, stats]) => {
+        const equipmentItem = equipmentLookup.byId.get(assetKey) || equipmentLookup.byAlias.get(assetKey)
+        return {
+          externalId: equipmentItem?.externalId || equipmentItem?.tag || null,
+          label: equipmentItem?.name || equipmentItem?.tag || stats.label,
+          value: stats.total,
+          open: stats.open,
+          closed: stats.closed,
+          checklistCount: checklistCountsByAsset.get(assetKey) || 0,
+          type: equipmentItem?.equipmentType || equipmentItem?.discipline || 'Unclassified',
+        }
+      })
+      .sort((a, b) => b.value - a.value)
+      .slice(0, 5)
+
+    return { staleChecklists, checklistOutliers, topIssueEquipment }
+  }, [checklists, equipment, issueLookup])
+
+  const openMatrixForType = (typeName) => {
+    setMatrixSearch(typeName)
+    setActiveTab('matrix')
+  }
+
+  const exportTracker = () => {
+    const rows = (tracker?.sections || []).flatMap((section) =>
+      section.rows.map((row) => [
+        section.discipline,
+        row.type,
+        row.units,
+        `${getLevelPercent(row.levels.L1.closed, row.levels.L1.total)}%`,
+        `${row.levels.L1.closed}/${row.levels.L1.total}`,
+        `${getLevelPercent(row.levels.L2.closed, row.levels.L2.total)}%`,
+        `${row.levels.L2.closed}/${row.levels.L2.total}`,
+        `${getLevelPercent(row.levels.L3.closed, row.levels.L3.total)}%`,
+        `${row.levels.L3.closed}/${row.levels.L3.total}`,
+        `${getLevelPercent(row.levels.L4.closed, row.levels.L4.total)}%`,
+        `${row.levels.L4.closed}/${row.levels.L4.total}`,
+      ])
+    )
+
+    downloadCsv(
+      `checklists-flow-${primaryProjectId || 'selection'}.csv`,
+      ['Discipline', 'Equipment Type', 'Units', 'L1 %', 'L1 Closed', 'L2 %', 'L2 Closed', 'L3 %', 'L3 Closed', 'L4 %', 'L4 Closed'],
+      rows
+    )
+  }
+
+  if (!targets.length) {
+    return (
+      <div
+        style={{
+          background: 'linear-gradient(180deg, rgba(17,24,39,0.92), rgba(15,23,42,0.94))',
+          border: '1px solid rgba(255,255,255,0.08)',
+          borderRadius: 20,
+          padding: 42,
+          textAlign: 'center',
+          color: '#8ea4c8',
+        }}
+      >
+        Select a project to open the checklist flow equipment tracker.
+      </div>
+    )
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+      <div>
+        <h2 style={{ fontSize: 24, fontWeight: 800, color: 'var(--text-primary)', margin: 0 }}>Checklists Flow</h2>
+        <p style={{ fontSize: 13, color: '#64748b', marginTop: 6 }}>
+          Simple equipment tracker with Cx-level completion by type, grouped into high-level disciplines.
+        </p>
+      </div>
+
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        {SUB_TABS.map((tab) => {
+          const Icon = tab.icon
+          const active = activeTab === tab.key
+          return (
+            <button
+              key={tab.key}
+              onClick={() => setActiveTab(tab.key)}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 8,
+                padding: '10px 16px',
+                borderRadius: 12,
+                border: active ? '1px solid rgba(59,130,246,0.45)' : '1px solid rgba(255,255,255,0.08)',
+                background: active ? 'linear-gradient(180deg, rgba(59,130,246,0.28), rgba(59,130,246,0.14))' : 'rgba(255,255,255,0.03)',
+                color: active ? '#f8fafc' : '#9fb1cd',
+                fontSize: 13,
+                fontWeight: 800,
+                cursor: 'pointer',
+              }}
+            >
+              <Icon size={15} />
+              <span>{tab.label}</span>
+            </button>
           )
         })}
-        {!filteredRisk.length && (
-          <div style={{ padding: '40px', textAlign: 'center', color: '#475569', fontSize: 13 }}>No equipment matches the current filters.</div>
-        )}
-      </div>
-    </div>
-  )
-}
-
-// ─── Main Page ────────────────────────────────────────────────────────────────
-export default function AssetReadinessPage() {
-  const { equipment, loading, error } = useEquipmentData()
-  const { matrix, matrixLoading }     = useMatrixData()
-  const computed = useMemo(() => computeAll(equipment), [equipment])
-  const [activeTab, setActiveTab]     = useState('Status & Timeline')
-
-  if (loading) return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
-      <div><div style={{ height: 28, width: 180, background: 'var(--bg-card)', borderRadius: 6, border: '1px solid var(--border)' }} /></div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 14 }}>
-        {[...Array(3)].map((_, i) => <div key={i} style={{ background: 'var(--bg-card)', borderRadius: 12, height: 90, border: '1px solid var(--border)' }} />)}
-      </div>
-    </div>
-  )
-
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-      {/* Title */}
-      <div>
-        <h2 style={{ fontSize: 22, fontWeight: 800, color: 'var(--text-primary)', margin: 0 }}>Asset Readiness</h2>
-        <p style={{ fontSize: 13, color: '#64748b', marginTop: 4 }}>Status progression, checklist matrix, and risk analytics for active equipment.</p>
       </div>
 
-      {/* Tabs */}
-      <div style={{ display: 'flex', gap: 4 }}>
-        {TABS.map(tab => (
-          <button key={tab} onClick={() => setActiveTab(tab)} style={{
-            padding: '7px 18px', fontSize: 13, fontWeight: 600, cursor: 'pointer',
-            background: activeTab === tab ? '#3b82f6' : 'var(--bg-card)',
-            border: activeTab === tab ? '1px solid #3b82f6' : '1px solid var(--border)',
-            borderRadius: 8, color: activeTab === tab ? '#fff' : '#94a3b8',
-            transition: 'all 0.15s',
-          }}>{tab}</button>
-        ))}
-      </div>
-
-      {/* Error state */}
       {error && (
-        <div style={{ padding: '14px 18px', background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)', borderRadius: 10, fontSize: 12, color: '#f87171' }}>
-          Failed to load equipment: {error}
+        <div
+          style={{
+            background: 'rgba(239,68,68,0.08)',
+            border: '1px solid rgba(239,68,68,0.18)',
+            borderRadius: 14,
+            padding: '14px 16px',
+            fontSize: 13,
+            color: '#fca5a5',
+          }}
+        >
+          {error}
         </div>
       )}
 
-      {/* Empty state */}
-      {!computed && !loading && (
-        <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 12, padding: '48px', textAlign: 'center', color: '#475569' }}>
-          <div style={{ fontSize: 28, marginBottom: 10 }}>🏗️</div>
-          <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 6 }}>No equipment data</div>
-          <div style={{ fontSize: 13 }}>Sync equipment for the selected project from the Sync page.</div>
+      {loading ? (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 16 }}>
+          {Array.from({ length: 3 }).map((_, index) => (
+            <div
+              key={index}
+              style={{
+                height: 220,
+                borderRadius: 18,
+                background: 'linear-gradient(180deg, rgba(17,24,39,0.92), rgba(15,23,42,0.94))',
+                border: '1px solid rgba(255,255,255,0.07)',
+              }}
+            />
+          ))}
         </div>
-      )}
+      ) : activeTab === 'tracker' ? (
+        <>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 14 }}>
+            <SummaryCard icon={Wrench} label="Tracked Units" value={tracker?.trackedUnits || 0} subValue={`${tracker?.trackedTypes || 0} equipment types`} tone="#38bdf8" />
+            <SummaryCard icon={Layers3} label="Electrical" value={`${electrical.completion}%`} subValue={`${electrical.units} units • ${electrical.types} types`} tone="#22c55e" />
+            <SummaryCard icon={Workflow} label="Mechanical" value={`${mechanical.completion}%`} subValue={`${mechanical.units} units • ${mechanical.types} types`} tone="#f59e0b" />
+            <SummaryCard icon={AlertTriangle} label="Overall CX" value={`${tracker?.overallCompletion || 0}%`} subValue={`${tracker?.matchedChecklistTotal || 0} mapped checklists • ${tracker?.unmatchedRows || 0} unmatched groups`} tone="#a78bfa" />
+          </div>
 
-      {/* Tab content */}
-      {computed && activeTab === 'Status & Timeline' && <StatusTimeline data={computed} />}
-      {activeTab === 'Equipment Matrix' && <EquipmentChecklistMatrix matrix={matrix} loading={matrixLoading} />}
-      {computed && activeTab === 'Risk Analytics' && <RiskAnalytics data={computed} />}
+          <div style={{ display: 'grid', gridTemplateColumns: '1.25fr 1fr 1fr', gap: 16, alignItems: 'start' }}>
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: 12,
+                flexWrap: 'wrap',
+                padding: '12px 14px',
+                borderRadius: 16,
+                border: '1px solid rgba(255,255,255,0.08)',
+                background: 'rgba(255,255,255,0.03)',
+                gridColumn: '1 / -1',
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                <MetricPill label="Mapped Checklists" value={tracker?.matchedChecklistTotal || 0} tone="#22c55e" />
+                <MetricPill label="Unmatched Groups" value={tracker?.unmatchedRows || 0} tone="#f59e0b" />
+                <MetricPill label="Stale Items" value={flowInsights.staleChecklists.length} tone="#f59e0b" />
+                <MetricPill label="Heavy-Issue Equipment" value={flowInsights.topIssueEquipment.length} tone="#60a5fa" />
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+                <div style={{ fontSize: 12, color: '#8ea4c8', fontWeight: 700 }}>
+                  L1 / L2 / L3 / L4 values are based on closed vs total mapped checklists by equipment type.
+                </div>
+                <button
+                  onClick={exportTracker}
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 8,
+                    padding: '9px 12px',
+                    borderRadius: 12,
+                    background: 'rgba(59,130,246,0.14)',
+                    border: '1px solid rgba(59,130,246,0.3)',
+                    color: '#dbeafe',
+                    fontSize: 12,
+                    fontWeight: 800,
+                    cursor: 'pointer',
+                  }}
+                >
+                  <Download size={14} />
+                  Export CSV
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', gap: 16, alignItems: 'start' }}>
+            {(tracker?.sections || [])
+              .filter((section) => section.discipline === 'Electrical' || section.discipline === 'Mechanical')
+              .map((section) => (
+                <SectionTable key={section.discipline} section={section} onOpenMatrix={openMatrixForType} />
+              ))}
+          </div>
+
+          {(tracker?.sections || []).some((section) => section.discipline === 'Other') && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+              {(tracker?.sections || [])
+                .filter((section) => section.discipline === 'Other')
+                .map((section) => (
+                  <SectionTable key={section.discipline} section={section} onOpenMatrix={openMatrixForType} />
+                ))}
+            </div>
+          )}
+
+          {(tracker?.sections || []).length === 0 && (
+            <div
+              style={{
+                background: 'linear-gradient(180deg, rgba(17,24,39,0.94), rgba(15,23,42,0.94))',
+                border: '1px solid rgba(255,255,255,0.08)',
+                borderRadius: 18,
+                padding: 36,
+                textAlign: 'center',
+                color: '#8ea4c8',
+              }}
+            >
+              No grouped equipment tracker data is available for this selection.
+            </div>
+          )}
+
+          <div style={{ display: 'grid', gridTemplateColumns: '1.25fr 1fr 1fr', gap: 16, alignItems: 'start' }}>
+            <StaleChecklistPanel
+              items={flowInsights.staleChecklists}
+              expandedId={expandedChecklistId}
+              onToggle={setExpandedChecklistId}
+              projectId={primaryProjectId}
+            />
+            <ExpandableInsightList
+              icon={TriangleAlert}
+              title="Checklist Outliers"
+              subtitle="Longest-running or longest-cycle checklist items in the current selection."
+              accent="#fb7185"
+              items={flowInsights.checklistOutliers}
+              emptyText="No checklist outliers detected from the current records."
+              expandedKey={expandedOutlierId}
+              onToggle={setExpandedOutlierId}
+              getKey={(item, index) => item.externalId || `${item.label}-${index}`}
+              renderCollapsedPills={(item) => (
+                <>
+                  <MetricPill label="Total" value={item.value} tone="#fb7185" />
+                </>
+              )}
+              renderExpandedMeta={(item) => (
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 10 }}>
+                  <div style={detailTileStyle}>
+                    <div style={detailLabelStyle}>Duration</div>
+                    <div style={detailValueStyle}>{item.value}</div>
+                  </div>
+                  <div style={detailTileStyle}>
+                    <div style={detailLabelStyle}>Equipment</div>
+                    <div style={detailValueStyle}>{item.assetLabel}</div>
+                  </div>
+                </div>
+              )}
+              getLink={(item) => buildChecklistUrl(primaryProjectId, item.externalId)}
+            />
+            <ExpandableInsightList
+              icon={Siren}
+              title="Top 5 Equipment With Max Issues"
+              subtitle="Equipment/assets carrying the heaviest linked issue load right now."
+              accent="#60a5fa"
+              items={flowInsights.topIssueEquipment}
+              emptyText="No issue-linked equipment found for the selected project."
+              expandedKey={expandedIssueEquipmentId}
+              onToggle={setExpandedIssueEquipmentId}
+              getKey={(item, index) => item.externalId || `${item.label}-${index}`}
+              renderCollapsedPills={(item) => (
+                <>
+                  <MetricPill label="Total" value={item.value} tone="#60a5fa" />
+                  <MetricPill label="Open" value={item.open} tone="#f87171" />
+                  <MetricPill label="Closed" value={item.closed} tone="#22c55e" />
+                </>
+              )}
+              renderExpandedMeta={(item) => (
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 10 }}>
+                  <div style={detailTileStyle}>
+                    <div style={detailLabelStyle}>Mapped Checklists</div>
+                    <div style={detailValueStyle}>{item.checklistCount}</div>
+                  </div>
+                  <div style={detailTileStyle}>
+                    <div style={detailLabelStyle}>Type</div>
+                    <div style={detailValueStyle}>{item.type}</div>
+                  </div>
+                </div>
+              )}
+              getLink={(item) => buildEquipmentUrl(primaryProjectId, item.externalId)}
+            />
+          </div>
+        </>
+      ) : (
+        <EquipmentChecklistMatrix
+          matrix={matrix}
+          loading={matrixLoading}
+          searchValue={matrixSearch}
+          onSearchChange={setMatrixSearch}
+          focusLabel={matrixSearch}
+        />
+      )}
     </div>
   )
 }

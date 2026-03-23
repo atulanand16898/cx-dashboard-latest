@@ -238,8 +238,11 @@ public class IssueService extends BaseProjectService {
         // Store raw value — the frontend normPriority() handles matching the exact strings.
         // Null priority is stored as null and treated as P4-Low on the frontend.
         i.setPriority(getAsText(n, "priority", getAsText(n, "priority_id", null)));
-        i.setAssignee(getAsText(n, "assigned_to", getAsText(n, "assignee", null)));
-        i.setReporter(getAsText(n, "reporter", getAsText(n, "created_by", null)));
+        i.setAssignee(getAsText(n, "assigned_to",
+                      getAsText(n, "assigned_name",
+                      getAsText(n, "assignee", null))));
+        i.setReporter(getAsText(n, "reporter", null));
+        i.setCreatedBy(getAsText(n, "created_by", null));
         i.setDueDate(getAsText(n, "due_date", null));
         i.setAssetId(getAsText(n, "asset_id", getAsText(n, "asset_key", null)));
         i.setSourceType(getAsText(n, "source_type", null));
@@ -265,8 +268,16 @@ public class IssueService extends BaseProjectService {
                         : "Unassigned";
         i.setLocation(location);
 
+        i.setActualFinishDate(getAsText(n, "actual_finish_date",
+                              getAsText(n, "closed_at",
+                              getAsText(n, "date_closed",
+                              getAsText(n, "completed_date",
+                              getAsText(n, "date_completed",
+                              getAsText(n, "accepted_at", null)))))));
         i.setCreatedAt(getAsText(n, "date_created", getAsText(n, "created_at", null)));
-        i.setUpdatedAt(getAsText(n, "updated_at", null));
+        i.setUpdatedAt(getAsText(n, "last_updated_at",
+                       getAsText(n, "updated_at",
+                       getAsText(n, "date_updated", null))));
         i.setRawJson(n.toString());
         i.setSyncedAt(now());
         return i;
@@ -317,6 +328,8 @@ public class IssueService extends BaseProjectService {
                 existing.setSpaceId(i.getSpaceId()); existing.setZoneId(i.getZoneId());
                 existing.setBuildingId(i.getBuildingId()); existing.setFloorId(i.getFloorId());
                 existing.setLocation(i.getLocation());
+                existing.setActualFinishDate(i.getActualFinishDate());
+                existing.setCreatedAt(i.getCreatedAt());
                 existing.setRawJson(i.getRawJson()); existing.setSyncedAt(now());
                 issueRepository.save(existing);
             }, () -> issueRepository.save(i));

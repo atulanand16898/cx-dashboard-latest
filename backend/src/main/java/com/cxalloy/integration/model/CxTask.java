@@ -36,6 +36,9 @@ public class CxTask {
     public String getAssignedTo() { return assignedTo; } public void setAssignedTo(String v) { this.assignedTo = v; }
     public String getDueDate() { return dueDate; } public void setDueDate(String v) { this.dueDate = v; }
     public String getCompletedDate() { return completedDate; } public void setCompletedDate(String v) { this.completedDate = v; }
+    @Transient
+    public String getActualFinishDate() { return completedDate; }
+    public void setActualFinishDate(String v) { this.completedDate = v; }
     public String getIssueId() { return issueId; } public void setIssueId(String v) { this.issueId = v; }
     public String getCreatedAt() { return createdAt; } public void setCreatedAt(String v) { this.createdAt = v; }
     public String getUpdatedAt() { return updatedAt; } public void setUpdatedAt(String v) { this.updatedAt = v; }

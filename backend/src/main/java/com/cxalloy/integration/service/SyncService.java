@@ -15,6 +15,7 @@ import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 import org.springframework.cache.annotation.CacheEvict;
 import org.springframework.cache.annotation.Cacheable;
 
@@ -51,6 +52,7 @@ public class SyncService {
     private final AssetService assetService;
     private final EquipmentService equipmentService;
     private final ChecklistService checklistService;
+    private final ChecklistStatusDateService checklistStatusDateService;
     private final CxTaskService taskService;
     private final FileStorageService fileStorageService;
     private final ApiSyncLogRepository syncLogRepository;
@@ -62,7 +64,8 @@ public class SyncService {
                        PersonService personService, CompanyService companyService,
                        RoleService roleService, AssetService assetService,
                        EquipmentService equipmentService,
-                       ChecklistService checklistService, CxTaskService taskService,
+                       ChecklistService checklistService, ChecklistStatusDateService checklistStatusDateService,
+                       CxTaskService taskService,
                        FileStorageService fileStorageService,
                        ApiSyncLogRepository syncLogRepository,
                        RawApiResponseRepository rawResponseRepository,
@@ -76,6 +79,7 @@ public class SyncService {
         this.assetService = assetService;
         this.equipmentService = equipmentService;
         this.checklistService = checklistService;
+        this.checklistStatusDateService = checklistStatusDateService;
         this.taskService = taskService;
         this.fileStorageService = fileStorageService;
         this.syncLogRepository = syncLogRepository;
@@ -261,7 +265,22 @@ public class SyncService {
         CompletableFuture<SyncResult> personFuture     = asyncSync(() -> personService.syncPersons(pid),       "/person",    "persons",    pid, pName, job);
         CompletableFuture<SyncResult> companyFuture    = asyncSync(() -> companyService.syncCompanies(pid),    "/company",   "companies",  pid, pName, job);
         CompletableFuture<SyncResult> roleFuture       = asyncSync(() -> roleService.syncRoles(pid),           "/role",      "roles",      pid, pName, job);
-        CompletableFuture<SyncResult> checklistFuture  = asyncSync(() -> checklistService.syncChecklists(pid), "/checklist", "checklists", pid, pName, job);
+        CompletableFuture<SyncResult> checklistFuture  = asyncSync(() -> {
+            SyncResult checklistResult = checklistService.syncChecklists(pid);
+            SyncResult statusDateResult = checklistStatusDateService.syncProject(pid);
+            long duration = checklistResult.getDurationMs() + statusDateResult.getDurationMs();
+            int recordsSynced = checklistResult.getRecordsSynced() + statusDateResult.getRecordsSynced();
+            String status = "SUCCESS".equalsIgnoreCase(checklistResult.getStatus())
+                    && "SUCCESS".equalsIgnoreCase(statusDateResult.getStatus())
+                    ? "SUCCESS"
+                    : ("FAILED".equalsIgnoreCase(checklistResult.getStatus())
+                    || "FAILED".equalsIgnoreCase(statusDateResult.getStatus()) ? "FAILED" : "PARTIAL");
+            String message = Stream.of(checklistResult.getMessage(), statusDateResult.getMessage())
+                    .filter(Objects::nonNull)
+                    .filter(s -> !s.isBlank())
+                    .collect(Collectors.joining(" | "));
+            return new SyncResult("/checklist", status, recordsSynced, message, duration);
+        }, "/checklist", "checklists", pid, pName, job);
         CompletableFuture<SyncResult> equipmentFuture  = asyncSync(() -> equipmentService.syncEquipment(pid),  "/equipment", "equipment",  pid, pName, job);
 
         CompletableFuture<List<SyncResult>> assetFuture = CompletableFuture.supplyAsync(() -> {

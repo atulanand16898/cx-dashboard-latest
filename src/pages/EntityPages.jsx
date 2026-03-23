@@ -46,12 +46,17 @@ export function ChecklistsPage() {
     <GenericListPage
       entityType="checklists"
       fetchFn={(pid) => checklistsApi.getAll(pid)}
-      syncFn={(pid) => checklistsApi.sync(pid)}
+      syncFn={(pid) => checklistsApi.syncWithStatusDates(pid)}
       activeProjectId={activeProject?.externalId}
       emptyIcon={Tag}
       emptyTitle="No Checklists Found"
       emptyDesc="Sync to pull checklists from CxAlloy"
       searchKeys={['name', 'externalId', 'status', 'checklistType']}
+      filterConfigs={[
+        { key: 'status', label: 'All Statuses', getValue: item => item.status || '' },
+        { key: 'tagLevel', label: 'All Tags', getValue: item => item.tagLevel || '' },
+        { key: 'checklistType', label: 'All Types', getValue: item => item.checklistType || '' },
+      ]}
       columns={[
         { key: 'externalId', label: 'ID', render: v => <span className="font-mono text-xs text-dark-400">{v || '—'}</span> },
         { key: 'name', label: 'Name', render: v => <span className="font-500 text-white">{v || '—'}</span> },
@@ -62,7 +67,10 @@ export function ChecklistsPage() {
             : <span className="text-dark-500">—</span>
         },
         { key: 'status', label: 'Status', render: v => <StatusBadge status={v} /> },
-        { key: 'createdAt', label: 'Created', render: v => <span className="font-mono text-xs text-dark-400">{fmtDate(v)}</span> },
+        { key: 'createdAt', label: 'Created', render: v => <span className="font-mono text-xs text-dark-400">{fmtDate(v)}</span>, exportValue: v => fmtDate(v) },
+        { key: 'updatedAt', label: 'Last Updated', render: v => <span className="font-mono text-xs text-dark-400">{fmtDate(v)}</span>, exportValue: v => fmtDate(v) },
+        { key: 'latestFinishedDate', label: 'Finished Status Date', render: v => <span className="font-mono text-xs text-dark-400">{fmtDate(v)}</span>, exportValue: v => fmtDate(v) },
+        { key: 'actualFinishDate', label: 'Actual Finish', render: v => <span className="font-mono text-xs text-dark-400">{fmtDate(v)}</span>, exportValue: v => fmtDate(v) },
       ]}
     />
   )

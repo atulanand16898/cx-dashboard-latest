@@ -2,6 +2,7 @@ package com.cxalloy.integration.model;
 
 import jakarta.persistence.*;
 import java.time.LocalDateTime;
+import java.time.LocalDate;
 
 @Entity
 @Table(name = "cxalloy_checklists", indexes = {
@@ -51,6 +52,9 @@ public class Checklist {
     @Column(name = "updated_at")  private String updatedAt;
     @Column(name = "raw_json", columnDefinition = "TEXT") private String rawJson;
     @Column(name = "synced_at")   private LocalDateTime syncedAt;
+    @Transient private LocalDate latestOpenDate;
+    @Transient private LocalDate latestInProgressDate;
+    @Transient private LocalDate latestFinishedDate;
 
     public Long getId() { return id; } public void setId(Long id) { this.id = id; }
     public String getExternalId() { return externalId; } public void setExternalId(String v) { this.externalId = v; }
@@ -69,8 +73,14 @@ public class Checklist {
     public String getAssignedTo() { return assignedTo; } public void setAssignedTo(String v) { this.assignedTo = v; }
     public String getDueDate() { return dueDate; } public void setDueDate(String v) { this.dueDate = v; }
     public String getCompletedDate() { return completedDate; } public void setCompletedDate(String v) { this.completedDate = v; }
+    @Transient
+    public String getActualFinishDate() { return completedDate; }
+    public void setActualFinishDate(String v) { this.completedDate = v; }
     public String getCreatedAt() { return createdAt; } public void setCreatedAt(String v) { this.createdAt = v; }
     public String getUpdatedAt() { return updatedAt; } public void setUpdatedAt(String v) { this.updatedAt = v; }
     public String getRawJson() { return rawJson; } public void setRawJson(String v) { this.rawJson = v; }
     public LocalDateTime getSyncedAt() { return syncedAt; } public void setSyncedAt(LocalDateTime v) { this.syncedAt = v; }
+    public LocalDate getLatestOpenDate() { return latestOpenDate; } public void setLatestOpenDate(LocalDate v) { this.latestOpenDate = v; }
+    public LocalDate getLatestInProgressDate() { return latestInProgressDate; } public void setLatestInProgressDate(LocalDate v) { this.latestInProgressDate = v; }
+    public LocalDate getLatestFinishedDate() { return latestFinishedDate; } public void setLatestFinishedDate(LocalDate v) { this.latestFinishedDate = v; }
 }

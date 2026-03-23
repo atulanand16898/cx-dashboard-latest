@@ -251,6 +251,12 @@ export default function ReportsPage() {
   const [summaryText, setSummaryText] = useState('')
   const [safetyNotes, setSafetyNotes] = useState('')
   const [commercialNotes, setCommercialNotes] = useState('')
+  const [projectDescription, setProjectDescription] = useState('')
+  const [clientName, setClientName] = useState('')
+  const [projectCode, setProjectCode] = useState('')
+  const [shiftWindow, setShiftWindow] = useState('')
+  const [reportAuthor, setReportAuthor] = useState('')
+  const [peopleOnSite, setPeopleOnSite] = useState('')
   const [options, setOptions] = useState({ issueStatuses: [], checklistStatuses: [], equipmentTypes: [] })
   const [savedReports, setSavedReports] = useState([])
   const [previewReport, setPreviewReport] = useState(null)
@@ -341,6 +347,12 @@ export default function ReportsPage() {
         summaryText,
         safetyNotes,
         commercialNotes,
+        projectDescription,
+        clientName,
+        projectCode,
+        shiftWindow,
+        reportAuthor,
+        peopleOnSite,
       })
       const report = res.data.data
       setPreviewReport(report)
@@ -495,6 +507,40 @@ export default function ReportsPage() {
                   <OptionChip key={type} label={type} active={equipmentTypes.includes(type.toLowerCase())} onClick={() => toggleArrayValue(type.toLowerCase(), equipmentTypes, setEquipmentTypes)} />
                 ))}
               </div>
+            </div>
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 12 }}>
+            <div>
+              <div style={{ fontSize: 11, fontWeight: 700, color: '#64748b', marginBottom: 6 }}>Project Description</div>
+              <input value={projectDescription} onChange={e => setProjectDescription(e.target.value)} placeholder="Daily / weekly report title" style={{ width: '100%', padding: '10px 12px', borderRadius: 10, background: 'var(--bg-base)', border: '1px solid var(--border)', color: 'var(--text-primary)', fontSize: 12, outline: 'none' }} />
+            </div>
+            <div>
+              <div style={{ fontSize: 11, fontWeight: 700, color: '#64748b', marginBottom: 6 }}>Client</div>
+              <input value={clientName} onChange={e => setClientName(e.target.value)} placeholder="Client / tenant" style={{ width: '100%', padding: '10px 12px', borderRadius: 10, background: 'var(--bg-base)', border: '1px solid var(--border)', color: 'var(--text-primary)', fontSize: 12, outline: 'none' }} />
+            </div>
+            <div>
+              <div style={{ fontSize: 11, fontWeight: 700, color: '#64748b', marginBottom: 6 }}>Project Code</div>
+              <input value={projectCode} onChange={e => setProjectCode(e.target.value)} placeholder="Project ID / code" style={{ width: '100%', padding: '10px 12px', borderRadius: 10, background: 'var(--bg-base)', border: '1px solid var(--border)', color: 'var(--text-primary)', fontSize: 12, outline: 'none' }} />
+            </div>
+            <div>
+              <div style={{ fontSize: 11, fontWeight: 700, color: '#64748b', marginBottom: 6 }}>Shift Window</div>
+              <input value={shiftWindow} onChange={e => setShiftWindow(e.target.value)} placeholder="7:30 AM - 5:30 PM" style={{ width: '100%', padding: '10px 12px', borderRadius: 10, background: 'var(--bg-base)', border: '1px solid var(--border)', color: 'var(--text-primary)', fontSize: 12, outline: 'none' }} />
+            </div>
+            <div>
+              <div style={{ fontSize: 11, fontWeight: 700, color: '#64748b', marginBottom: 6 }}>Author</div>
+              <input value={reportAuthor} onChange={e => setReportAuthor(e.target.value)} placeholder="Report author" style={{ width: '100%', padding: '10px 12px', borderRadius: 10, background: 'var(--bg-base)', border: '1px solid var(--border)', color: 'var(--text-primary)', fontSize: 12, outline: 'none' }} />
+            </div>
+            <div>
+              <div style={{ fontSize: 11, fontWeight: 700, color: '#64748b', marginBottom: 6 }}>Location</div>
+              <input value={selectedProject?.location || ''} readOnly style={{ width: '100%', padding: '10px 12px', borderRadius: 10, background: 'rgba(255,255,255,0.04)', border: '1px solid var(--border)', color: '#94a3b8', fontSize: 12, outline: 'none' }} />
+            </div>
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 12 }}>
+            <div>
+              <div style={{ fontSize: 11, fontWeight: 700, color: '#64748b', marginBottom: 6 }}>People On Site Detail</div>
+              <textarea value={peopleOnSite} onChange={e => setPeopleOnSite(e.target.value)} placeholder={'One person per line, for example:\nAli Mehdi Syed | CxE | Onsite | L2-L5 | 1'} style={{ width: '100%', minHeight: 96, padding: '12px 12px', borderRadius: 12, background: 'var(--bg-base)', border: '1px solid var(--border)', color: 'var(--text-primary)', fontSize: 12, resize: 'vertical', outline: 'none' }} />
             </div>
           </div>
 

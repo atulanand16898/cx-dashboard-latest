@@ -5,6 +5,7 @@ import { copilotApi } from '../services/api'
 const DEFAULT_MODEL = 'gpt-4o-mini'
 const API_KEY_STORAGE = 'modem_iq_openai_api_key'
 const MODEL_STORAGE = 'modem_iq_openai_model'
+const PROJECT_FILES_STORAGE = 'modem_iq_include_project_files'
 
 const QUICK_PROMPTS = [
   'Summarize the biggest risks in my current data.',
@@ -50,7 +51,7 @@ function SearchGroup({ label, rows, keyField, titleField }) {
 export default function AICopilotPage() {
   const { selectedProjects, activeProject } = useProject()
   const targets = selectedProjects.length > 0 ? selectedProjects : (activeProject ? [activeProject] : [])
-  const [scopeMode, setScopeMode] = useState('selection')
+  const [scopeMode, setScopeMode] = useState('workspace')
   const [context, setContext] = useState(null)
   const [contextLoading, setContextLoading] = useState(false)
   const [messages, setMessages] = useState([])
@@ -58,6 +59,7 @@ export default function AICopilotPage() {
   const [thinking, setThinking] = useState(false)
   const [apiKey, setApiKey] = useState(() => localStorage.getItem(API_KEY_STORAGE) || '')
   const [model, setModel] = useState(() => localStorage.getItem(MODEL_STORAGE) || DEFAULT_MODEL)
+  const [includeProjectFiles, setIncludeProjectFiles] = useState(() => localStorage.getItem(PROJECT_FILES_STORAGE) !== 'false')
   const [files, setFiles] = useState([])
   const [error, setError] = useState('')
   const endRef = useRef(null)
@@ -82,9 +84,13 @@ export default function AICopilotPage() {
   }, [model])
 
   useEffect(() => {
+    localStorage.setItem(PROJECT_FILES_STORAGE, includeProjectFiles ? 'true' : 'false')
+  }, [includeProjectFiles])
+
+  useEffect(() => {
     let cancelled = false
     setContextLoading(true)
-    copilotApi.getContext(projectIds)
+    copilotApi.getContext(projectIds, '', includeProjectFiles)
       .then(({ data }) => {
         if (!cancelled) {
           setContext(data.data)
@@ -100,15 +106,22 @@ export default function AICopilotPage() {
         if (!cancelled) setContextLoading(false)
       })
     return () => { cancelled = true }
-  }, [projectIds.join('|')])
+  }, [projectIds.join('|'), includeProjectFiles])
 
   useEffect(() => {
     if (!context) return
     const totals = context.totals || {}
     const names = context.scope?.projectNames || []
+    const dateIndex = context.dateIndex || {}
+    const checklistDates = dateIndex.checklists?.actualFinish?.count || 0
+    const issueDates = dateIndex.issues?.actualFinish?.count || 0
+    const taskDates = dateIndex.tasks?.actualFinish?.count || 0
+    const testDates = dateIndex.tests?.actualFinish?.count || 0
+    const libraryFiles = totals.projectLibraryFiles || 0
+    const indexedLibraryFiles = totals.projectLibraryIndexedFiles || 0
     setMessages([{
       role: 'assistant',
-      text: `AI Copilot is online for ${scopeLabel}. I can see ${totals.projects || 0} projects, ${totals.issues || 0} issues, ${totals.checklists || 0} checklists, ${totals.equipment || 0} equipment rows, and ${totals.tasks || 0} tasks.${names.length ? ` Active projects: ${names.slice(0, 3).join(', ')}${names.length > 3 ? '...' : ''}.` : ''}`,
+      text: `AI Copilot is online for ${scopeLabel}. I can see ${totals.projects || 0} projects, ${totals.issues || 0} issues, ${totals.checklists || 0} checklists, ${totals.equipment || 0} equipment rows, ${totals.tasks || 0} tasks, ${totals.tests || 0} tests, and ${totals.files || 0} synced CxAlloy files.${includeProjectFiles ? ` Project file library enabled: ${libraryFiles} stored files, ${indexedLibraryFiles} indexed with extractable context.` : ' Project file library is currently disabled in AI context.'}${names.length ? ` Active projects: ${names.slice(0, 3).join(', ')}${names.length > 3 ? '...' : ''}.` : ''} Date coverage loaded: ${checklistDates} checklist actual-finish dates, ${issueDates} issue actual-finish dates, ${taskDates} task actual-finish dates, and ${testDates} test actual-finish dates.`,
     }])
   }, [
     scopeMode,
@@ -118,6 +131,15 @@ export default function AICopilotPage() {
     context?.totals?.checklists,
     context?.totals?.equipment,
     context?.totals?.tasks,
+    context?.totals?.tests,
+    context?.totals?.files,
+    context?.totals?.projectLibraryFiles,
+    context?.totals?.projectLibraryIndexedFiles,
+    context?.dateIndex?.checklists?.actualFinish?.count,
+    context?.dateIndex?.issues?.actualFinish?.count,
+    context?.dateIndex?.tasks?.actualFinish?.count,
+    context?.dateIndex?.tests?.actualFinish?.count,
+    includeProjectFiles,
   ])
 
   useEffect(() => {
@@ -151,6 +173,7 @@ export default function AICopilotPage() {
           model: model.trim() || DEFAULT_MODEL,
           prompt: text,
           projectIds,
+          includeProjectFiles,
           conversation: messages,
         },
         files,
@@ -164,6 +187,7 @@ export default function AICopilotPage() {
         scope: data.scope || prev.scope,
         searchMatches: data.searchMatches || prev.searchMatches,
         uploads: data.uploads || prev.uploads,
+        projectLibraryFiles: data.projectLibraryFiles || prev.projectLibraryFiles,
       } : prev)
     } catch (err) {
       const message = err.response?.data?.message || err.message || 'Copilot request failed.'
@@ -177,6 +201,7 @@ export default function AICopilotPage() {
   const totals = context?.totals || {}
   const searchMatches = context?.searchMatches || {}
   const uploadPreviews = context?.uploads || []
+  const indexedProjectFiles = context?.projectLibraryFiles?.preview || []
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
@@ -221,13 +246,28 @@ export default function AICopilotPage() {
         <div style={{ padding: '8px 14px', borderRadius: 999, border: '1px solid var(--border)', background: 'var(--bg-card)', fontSize: 12, color: '#94a3b8' }}>
           Scope: {scopeLabel}
         </div>
+        <button
+          onClick={() => setIncludeProjectFiles(value => !value)}
+          style={{
+            padding: '8px 14px',
+            borderRadius: 999,
+            border: includeProjectFiles ? '1px solid rgba(34,197,94,0.4)' : '1px solid var(--border)',
+            background: includeProjectFiles ? 'rgba(34,197,94,0.10)' : 'var(--bg-card)',
+            color: includeProjectFiles ? '#86efac' : '#94a3b8',
+            fontSize: 12,
+            fontWeight: 700,
+            cursor: 'pointer',
+          }}
+        >
+          {includeProjectFiles ? 'Project File Library On' : 'Project File Library Off'}
+        </button>
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 14 }}>
         <MetricCard label="Projects" value={contextLoading ? '...' : totals.projects || 0} sub="In current AI scope" />
         <MetricCard label="Issues" value={contextLoading ? '...' : totals.issues || 0} sub={`${totals.openIssues || 0} open / ${totals.closedIssues || 0} closed`} />
         <MetricCard label="Checklists" value={contextLoading ? '...' : totals.checklists || 0} sub={`${totals.equipment || 0} equipment rows linked`} />
-        <MetricCard label="Files" value={contextLoading ? '...' : totals.files || 0} sub={`${Math.round((totals.fileBytes || 0) / 1024 / 1024)} MB indexed`} />
+        <MetricCard label="Files" value={contextLoading ? '...' : (includeProjectFiles ? totals.projectLibraryIndexedFiles || 0 : totals.files || 0)} sub={includeProjectFiles ? `${totals.projectLibraryFiles || 0} stored / ${Math.round((totals.projectLibraryFileBytes || 0) / 1024 / 1024)} MB library` : `${Math.round((totals.fileBytes || 0) / 1024 / 1024)} MB synced`} />
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '1.7fr 1fr', gap: 16, alignItems: 'start' }}>
@@ -353,6 +393,25 @@ export default function AICopilotPage() {
           <SearchGroup label="Issue Matches" rows={searchMatches.issues} keyField="issueId" titleField="title" />
           <SearchGroup label="Checklist Matches" rows={searchMatches.checklists} keyField="checklistId" titleField="name" />
           <SearchGroup label="Equipment Matches" rows={searchMatches.equipment} keyField="equipmentId" titleField="name" />
+          <SearchGroup label="Project File Matches" rows={searchMatches.projectLibraryFiles} keyField="name" titleField="folderName" />
+          <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 12, padding: '14px 16px' }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-primary)' }}>Indexed Project File Library</div>
+            <div style={{ fontSize: 11, color: '#64748b', marginTop: 4 }}>
+              {includeProjectFiles ? 'Stored files from the Files tab are being added to AI context with text extraction for text, PDF, and Office files when possible.' : 'Turn on the project file library toggle above to include stored files from the Files tab.'}
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 12 }}>
+              {indexedProjectFiles.length ? indexedProjectFiles.map((file, index) => (
+                <div key={`${file.name || 'stored-file'}-${index}`} style={{ padding: '8px 10px', borderRadius: 10, background: 'var(--bg-base)', border: '1px solid var(--border)' }}>
+                  <div style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--text-primary)' }}>{file.name}</div>
+                  <div style={{ fontSize: 10.5, color: '#64748b', marginTop: 3 }}>
+                    {file.folderName || 'No folder'} • {file.status || 'open'} • {Math.round((file.sizeBytes || 0) / 1024)} KB
+                  </div>
+                </div>
+              )) : (
+                <div style={{ fontSize: 12, color: '#64748b', marginTop: 8 }}>No stored project files indexed yet.</div>
+              )}
+            </div>
+          </div>
           <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 12, padding: '14px 16px' }}>
             <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-primary)' }}>Uploaded File Context</div>
             <div style={{ fontSize: 11, color: '#64748b', marginTop: 4 }}>Files are attached to the next copilot answer. Text-like files are extracted; binary files are sent as metadata only in this version.</div>

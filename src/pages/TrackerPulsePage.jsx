@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useMemo } from 'react'
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine, Cell } from 'recharts'
+import { Zap } from 'lucide-react'
 import { useProject } from '../context/ProjectContext'
 import { checklistsApi, issuesApi, tasksApi } from '../services/api'
 
 const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
-const SUMMARY_MATRIX_TAG_ORDER = ['red', 'yellow', 'green', 'blue', 'white']
+const SUMMARY_MATRIX_TAG_ORDER = ['red', 'yellow', 'green', 'blue']
 const TAG_COLORS_MAP = {
   red: '#ef4444', yellow: '#eab308', green: '#22c55e',
   blue: '#3b82f6', white: '#94a3b8',
@@ -35,8 +36,29 @@ const isDone = s => ['finished', 'complete', 'completed', 'done', 'closed',
 
 // ── Best date from a checklist ────────────────────────────────────────────────
 function pickDate(c) {
-  return c.completedDate || c.updatedAt || c.createdAt
-      || c.completed_date || c.updated_at || c.created_at || null
+  return c.latestFinishedDate || c.latest_finished_date
+      || c.updatedAt || c.updated_at
+      || c.actualFinishDate || c.actual_finish_date
+      || c.completedDate || c.completed_date
+      || c.createdAt || c.created_at || null
+}
+
+function calculateDailyRunRate(items, dateAccessor = pickDate) {
+  if (!items.length) return 0
+  const dates = items
+    .map(item => {
+      const raw = dateAccessor(item)
+      if (!raw) return null
+      const d = new Date(raw)
+      return isNaN(d) ? null : d
+    })
+    .filter(Boolean)
+
+  if (!dates.length) return 0
+  const minMs = Math.min(...dates.map(d => d.getTime()))
+  const maxMs = Math.max(...dates.map(d => d.getTime()))
+  const calendarDays = Math.max(1, (maxMs - minMs) / (24 * 3600 * 1000))
+  return +(items.length / calendarDays).toFixed(1)
 }
 
 // ── Derive color tag ──────────────────────────────────────────────────────────
@@ -145,23 +167,8 @@ function computeStats(checklists, issues, tasks) {
   let runRatePerWeek = 0
   let avgPerDay      = 0
   if (closedChecklists.length > 0) {
-    const dates = closedChecklists
-      .map(c => {
-        const raw = c.updatedAt || c.updated_at || c.completedDate || c.completed_date
-                 || c.createdAt || c.created_at || null
-        if (!raw) return null
-        const d = new Date(raw)
-        return isNaN(d) ? null : d
-      })
-      .filter(Boolean)
-    if (dates.length > 0) {
-      const minMs = Math.min(...dates.map(d => d.getTime()))
-      const maxMs = Math.max(...dates.map(d => d.getTime()))
-      // Calendar days spanned — minimum 1 to avoid ÷0 when all closed same day
-      const calendarDays = Math.max(1, (maxMs - minMs) / (24 * 3600 * 1000))
-      avgPerDay      = +(closedChecklists.length / calendarDays).toFixed(1)
-      runRatePerWeek = +(avgPerDay * 7).toFixed(1)
-    }
+    avgPerDay = calculateDailyRunRate(closedChecklists)
+    runRatePerWeek = +(avgPerDay * 7).toFixed(1)
   }
 
   // ── Weekly counts (ISO week) for best/worst week ─────────────────────────
@@ -241,9 +248,10 @@ function computeStats(checklists, issues, tasks) {
   const colorRows = SUMMARY_MATRIX_TAG_ORDER
     .map(tag => {
       const count = colorCounts[tag] || 0
-      const closedOfTag = checklists.filter(c => tagCache.get(c) === tag && isDone(c.status)).length
+      const closedItems = checklists.filter(c => tagCache.get(c) === tag && isDone(c.status))
+      const closedOfTag = closedItems.length
       const pct = count > 0 ? Math.round(closedOfTag / count * 100) : 0
-      return { tag, count, closedOfTag, pct }
+      return { tag, count, closedOfTag, pct, dailyRunRate: calculateDailyRunRate(closedItems) }
     })
 
   // ── Schedule variance from tasks ─────────────────────────────────────────
@@ -307,14 +315,75 @@ const SummaryDonut = ({ total, closed }) => {
   const dash = (pct / 100) * circ
   return (
     <svg width={104} height={104} style={{ flexShrink: 0 }}>
-      <circle cx={cx} cy={cy} r={r} fill="none" stroke="var(--donut-track)" strokeWidth={10} />
-      <circle cx={cx} cy={cy} r={r} fill="none" stroke="#22c55e" strokeWidth={10}
+      <circle cx={cx} cy={cy} r={r} fill="none" stroke="rgba(148,163,184,0.26)" strokeWidth={10} />
+      <circle cx={cx} cy={cy} r={r} fill="none" stroke="#f8fafc" strokeWidth={10}
         strokeDasharray={`${dash} ${circ - dash}`} strokeDashoffset={circ * 0.25}
         strokeLinecap="round" style={{ transition: 'stroke-dasharray 0.8s ease' }} />
       <text x={cx} y={cy + 1} textAnchor="middle" dominantBaseline="middle"
         style={{ fill: 'var(--text-primary)', fontSize: 14, fontWeight: 800 }}>{pct}%</text>
       <text x={cx} y={cy + 16} textAnchor="middle" style={{ fill: 'var(--text-muted)', fontSize: 9 }}>Closed</text>
     </svg>
+  )
+}
+
+const TagDonutCard = ({ tag, label, count, closedOfTag, pct, dailyRunRate }) => {
+  const stroke = TAG_COLORS_MAP[tag] || '#64748b'
+  const radius = 30
+  const circumference = 2 * Math.PI * radius
+  const dash = (pct / 100) * circumference
+
+  return (
+    <div style={{
+      background: 'var(--border-subtle)',
+      border: '1px solid var(--progress-track)',
+      borderRadius: 16,
+      padding: '14px 16px',
+      display: 'flex',
+      alignItems: 'center',
+      gap: 14,
+      boxShadow: `inset 0 1px 0 rgba(255,255,255,0.03), 0 14px 24px ${stroke}12`,
+    }}>
+      <svg width={78} height={78} style={{ flexShrink: 0 }}>
+        <defs>
+          <filter id={`glow-${tag}`}>
+            <feDropShadow dx="0" dy="0" stdDeviation="2.5" floodColor={stroke} floodOpacity="0.4" />
+          </filter>
+        </defs>
+        <circle cx={39} cy={39} r={radius} fill="none" stroke={`${stroke}22`} strokeWidth={8} />
+        <circle
+          cx={39}
+          cy={39}
+          r={radius}
+          fill="none"
+          stroke={stroke}
+          strokeWidth={8}
+          strokeDasharray={`${dash} ${circumference - dash}`}
+          strokeDashoffset={circumference * 0.25}
+          strokeLinecap="round"
+          style={{ transition: 'stroke-dasharray 0.8s ease' }}
+          filter={`url(#glow-${tag})`}
+        />
+        <text x={39} y={42} textAnchor="middle" style={{ fill: 'var(--text-primary)', fontSize: 14, fontWeight: 800 }}>
+          {pct}%
+        </text>
+      </svg>
+
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 4 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+                    <div style={{ width: 10, height: 10, borderRadius: '50%', background: stroke, boxShadow: `0 0 0 4px ${stroke}22`, flexShrink: 0 }} />
+            <span style={{ fontSize: 13, color: 'var(--text-primary)', fontWeight: 700 }}>
+              {label || tag}
+            </span>
+          </div>
+          <span style={{ fontSize: 18, fontWeight: 800, color: 'var(--text-primary)' }}>{count}</span>
+        </div>
+        <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 5 }}>
+          {closedOfTag}/{count} closed
+        </div>
+        <div style={{ fontSize: 12, color: stroke, fontWeight: 800 }}>{dailyRunRate}/day</div>
+      </div>
+    </div>
   )
 }
 
@@ -398,15 +467,15 @@ export default function TrackerPulsePage() {
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
 
       {/* ── 6 KPI cards ─────────────────────────────────────────────────────── */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 12 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 12 }}>
         <StatCard
-          label="Avg Efficiency"
-          value={`${+(stats.closed / stats.total * 100).toFixed(0)}%`}
-          sub={`${stats.runRatePerWeek}/week checklists`}
+          label="% Comp"
+          value={`${stats.completion.toFixed(1)}%`}
+          sub={`${stats.closed}/${stats.total} closed`}
           valueColor="#22c55e"
         />
-        <StatCard label="Best Week"  value={stats.bestWeek[1]}  sub={stats.bestWeek[0]}  valueColor="#818cf8" />
-        <StatCard label="Worst Week" value={stats.worstWeek[1]} sub={stats.worstWeek[0]} valueColor="#f59e0b" />
+        <StatCard label="Week Runrate" value={`${stats.runRatePerWeek}/wk`} sub="Closed checklist pace" valueColor="#818cf8" />
+        <StatCard label="Daily Runrate" value={`${stats.avgPerDay}/day`} sub="Closed checklist pace" valueColor="#f59e0b" />
         <StatCard label="Stale Checklists" value={stats.stale} sub={`${stats.stalePct}% inactive 30+ days`} valueColor="#f59e0b" />
         <StatCard
           label="Schedule Variance"
@@ -415,58 +484,57 @@ export default function TrackerPulsePage() {
           valueColor={schedColor}
         />
         <StatCard
-          label="Issue Activity"
-          value={`${stats.openIssues}:${stats.closedIssues}`}
-          sub={`${stats.openIssues} opened / ${stats.closedIssues} closed`}
+          label="Issues Open"
+          value={stats.openIssues}
+          sub={`${stats.openIssues + stats.closedIssues ? +((stats.openIssues / (stats.openIssues + stats.closedIssues)) * 100).toFixed(1) : 0}% of issues`}
+          valueColor="#f87171"
+        />
+        <StatCard
+          label="Issues Closed"
+          value={stats.closedIssues}
+          sub={`${stats.openIssues + stats.closedIssues ? +((stats.closedIssues / (stats.openIssues + stats.closedIssues)) * 100).toFixed(1) : 0}% of issues`}
           valueColor="#60a5fa"
         />
       </div>
 
       {/* ── 3-column section ─────────────────────────────────────────────────── */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.6fr 1fr', gap: 16 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: '3fr 2fr 2fr', gap: 16 }}>
 
         {/* ── Summary Matrix ─────────────────────────────────────────────────── */}
         <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 14, padding: '20px' }}>
           <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 4 }}>Summary Matrix</div>
-          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 16 }}>Total checklists, closed checklists, open checklists, and color split</div>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 16 }}>Total checklists, closed checklists, open checklists, color split, and daily run rate by category</div>
 
-          <div style={{ display: 'flex', alignItems: 'flex-start', gap: 16, marginBottom: 18 }}>
-            <SummaryDonut total={stats.total} closed={stats.closed} />
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 10, flex: 1 }}>
-              {[
-                { label: 'TOTAL CHECKLISTS',  value: stats.total.toLocaleString() },
-                { label: 'CHECKLISTS CLOSED', value: stats.closed.toLocaleString() },
-                { label: 'CHECKLISTS OPEN',   value: stats.open.toLocaleString() },
-              ].map(row => (
-                <div key={row.label}>
-                  <div style={{ fontSize: 10, color: 'var(--text-muted)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em' }}>{row.label}</div>
-                  <div style={{ fontSize: 20, fontWeight: 800, color: 'var(--text-primary)' }}>{row.value}</div>
-                </div>
-              ))}
+          <div style={{ display: 'flex', alignItems: 'flex-start', gap: 22, marginBottom: 18 }}>
+            <div style={{ display: 'flex', alignItems: 'flex-start', gap: 16, flex: 1 }}>
+              <SummaryDonut total={stats.total} closed={stats.closed} />
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10, flex: 1 }}>
+                {[
+                  { label: 'TOTAL CHECKLISTS',  value: stats.total.toLocaleString() },
+                  { label: 'CHECKLISTS CLOSED', value: stats.closed.toLocaleString() },
+                  { label: 'CHECKLISTS OPEN',   value: stats.open.toLocaleString() },
+                ].map(row => (
+                  <div key={row.label}>
+                    <div style={{ fontSize: 10, color: 'var(--text-muted)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em' }}>{row.label}</div>
+                    <div style={{ fontSize: 20, fontWeight: 800, color: 'var(--text-primary)' }}>{row.value}</div>
+                  </div>
+                ))}
+              </div>
             </div>
           </div>
 
           {/* Color rows — now using deriveTag() so red/yellow/green/blue show correctly */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {stats.colorRows.map(({ tag, count, closedOfTag, pct }) => (
-              <div key={tag} style={{
-                background: 'var(--border-subtle)', border: '1px solid var(--progress-track)',
-                borderRadius: 8, padding: '10px 12px',
-              }}>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 5 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
-                    <div style={{ width: 9, height: 9, borderRadius: '50%', background: TAG_COLORS_MAP[tag] || '#64748b', flexShrink: 0 }} />
-                    <span style={{ fontSize: 13, color: 'var(--text-primary)', fontWeight: 600, textTransform: 'capitalize' }}>
-                      {tag.charAt(0).toUpperCase() + tag.slice(1)}
-                    </span>
-                  </div>
-                  <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)' }}>{count}</span>
-                </div>
-                <div style={{ height: 4, background: 'var(--progress-track)', borderRadius: 2, marginBottom: 4 }}>
-                  <div style={{ height: '100%', borderRadius: 2, background: TAG_COLORS_MAP[tag] || '#64748b', width: `${pct}%`, transition: 'width 0.8s ease' }} />
-                </div>
-                <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{pct}% completion ({closedOfTag}/{count})</div>
-              </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 10 }}>
+            {stats.colorRows.map(({ tag, count, closedOfTag, pct, dailyRunRate }) => (
+              <TagDonutCard
+                key={tag}
+                tag={tag}
+                label={tag.charAt(0).toUpperCase() + tag.slice(1)}
+                count={count}
+                closedOfTag={closedOfTag}
+                pct={pct}
+                dailyRunRate={dailyRunRate}
+              />
             ))}
           </div>
         </div>
@@ -475,7 +543,7 @@ export default function TrackerPulsePage() {
         <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 14, padding: '20px' }}>
           <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 2 }}>Weekly Progress</div>
           <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4 }}>
-            Daily checklist breakdown with {stats.avgPerDay} avg checklists/day
+            Daily checklist breakdown with {stats.avgPerDay} daily run rate from latest updates
           </div>
           <div style={{ fontSize: 28, fontWeight: 800, color: 'var(--text-primary)', marginBottom: 2 }}>
             {stats.total.toLocaleString()}
@@ -515,7 +583,7 @@ export default function TrackerPulsePage() {
           {/* Stats row */}
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10, marginTop: 14, paddingTop: 14, borderTop: '1px solid var(--divider)' }}>
             {[
-              { label: 'DAILY AVERAGE', value: stats.avgPerDay, unit: 'checklists' },
+              { label: 'DAILY RUN RATE', value: stats.avgPerDay, unit: 'checklists/day' },
               { label: 'BEST DAY',      value: `${stats.bestDay.day} (${stats.bestDay.count})` },
               { label: 'ABOVE AVG DAYS', value: stats.aboveAvgDays },
             ].map(m => (
@@ -538,14 +606,14 @@ export default function TrackerPulsePage() {
         <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 14, padding: '20px' }}>
           <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 4 }}>Projected Completion</div>
           <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 14 }}>
-            Projected from closed checklists and current avg checklists/day
+            Projected from closed checklists and current latest-update daily run rate
           </div>
 
           <div style={{ fontSize: 26, fontWeight: 800, color: 'var(--text-primary)', marginBottom: 4 }}>
             {stats.projectedCompletion.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
           </div>
           <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 18 }}>
-            Projected from actual average checklists/day.
+            Projected from latest checklist updates.
           </div>
 
           {/* Progress bars */}
@@ -579,10 +647,10 @@ export default function TrackerPulsePage() {
             ))}
           </div>
 
-          {/* AVG CHECKLISTS/DAY + RUN RATE */}
+          {/* DAILY RUN RATE + RUN RATE */}
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 10 }}>
             {[
-              { label: 'AVG CHECKLISTS/DAY', value: stats.avgPerDay },
+              { label: 'DAILY RUN RATE', value: `${stats.avgPerDay}/day` },
               { label: 'RUN RATE',           value: `${stats.runRatePerWeek}/week` },
             ].map(m => (
               <div key={m.label} style={{ background: 'var(--border-subtle)', borderRadius: 8, padding: '10px 12px' }}>
@@ -595,11 +663,65 @@ export default function TrackerPulsePage() {
           {/* Narrative */}
           {stats.remaining > 0 && stats.avgPerDay > 0 && (
             <div style={{ padding: '10px 14px', background: 'var(--border-subtle)', borderRadius: 8, fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.5 }}>
-              At the current average of {stats.avgPerDay} checklists/day, the project needs about {Math.ceil(stats.daysNeeded)} more day{Math.ceil(stats.daysNeeded) !== 1 ? 's' : ''} to close the remaining {stats.remaining} checklist{stats.remaining !== 1 ? 's' : ''}.
+              At the current latest-update daily run rate of {stats.avgPerDay} checklists/day, the project needs about {Math.ceil(stats.daysNeeded)} more day{Math.ceil(stats.daysNeeded) !== 1 ? 's' : ''} to close the remaining {stats.remaining} checklist{stats.remaining !== 1 ? 's' : ''}.
             </div>
           )}
         </div>
 
+      </div>
+
+      <div style={{
+        background: 'linear-gradient(180deg, rgba(17,24,39,0.92), rgba(15,23,42,0.96))',
+        border: '1px solid rgba(245,158,11,0.22)',
+        borderRadius: 18,
+        padding: '20px 22px',
+        display: 'flex',
+        alignItems: 'flex-start',
+        gap: 16,
+        boxShadow: '0 18px 40px rgba(2,6,23,0.18)',
+      }}>
+        <div style={{
+          width: 40,
+          height: 40,
+          borderRadius: 12,
+          background: 'rgba(245,158,11,0.12)',
+          border: '1px solid rgba(245,158,11,0.14)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          color: '#fbbf24',
+          flexShrink: 0,
+        }}>
+          <Zap size={18} />
+        </div>
+
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{
+            fontSize: 12,
+            fontWeight: 800,
+            color: '#f59e0b',
+            textTransform: 'uppercase',
+            letterSpacing: '0.12em',
+            marginBottom: 6,
+          }}>
+            Project Health Insight
+          </div>
+          <div style={{ fontSize: 16, color: 'var(--text-secondary)', lineHeight: 1.55, marginBottom: 12 }}>
+            Outstanding execution — {stats.completion.toFixed(1)}% checklist completion ({stats.closed} of {stats.total}). {stats.openIssues} open issue{stats.openIssues !== 1 ? 's' : ''} remaining.
+          </div>
+
+          <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 22 }}>
+            <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+              Completion: <span style={{ color: '#22c55e', fontWeight: 800 }}>{stats.completion.toFixed(1)}%</span>
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+              Checklists: <span style={{ color: 'var(--text-primary)', fontWeight: 800 }}>{stats.closed}/{stats.total}</span>
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+              Open Issues: <span style={{ color: '#f59e0b', fontWeight: 800 }}>{stats.openIssues}</span>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   )

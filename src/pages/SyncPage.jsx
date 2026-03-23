@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { RefreshCw, Play, Activity, CheckCircle2, AlertCircle, Clock, Database, Search, ChevronRight, Zap } from 'lucide-react'
-import { syncApi, projectsApi, briefsApi } from '../services/api'
+import { syncApi, projectsApi, briefsApi, checklistsApi } from '../services/api'
 import { SyncResultCard, Skeleton, StatCard, TabSwitcher } from '../components/ui'
 import { useProject } from '../context/ProjectContext'
 import toast from 'react-hot-toast'
@@ -77,9 +77,10 @@ export default function SyncPage() {
     setSyncing(s => ({ ...s, [type]: true }))
     setResults(r => ({ ...r, [type]: null }))
     try {
-      const fn = syncApi[`sync${type.charAt(0).toUpperCase() + type.slice(1)}`]
       const projectIds = activeProject ? [activeProject.externalId] : undefined
-      const res = await fn(projectIds)
+      const res = type === 'checklists'
+        ? await checklistsApi.syncWithStatusDates(activeProject?.externalId)
+        : await syncApi[`sync${type.charAt(0).toUpperCase() + type.slice(1)}`](projectIds)
       setResults(r => ({ ...r, [type]: res.data.data }))
       toast.success(`${type} synced!`)
     } catch (err) {

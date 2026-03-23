@@ -10,6 +10,7 @@ public class CopilotChatRequest {
     private String prompt;
     private List<String> projectIds = new ArrayList<>();
     private List<CopilotMessage> conversation = new ArrayList<>();
+    private boolean includeProjectFiles = true;
 
     public String getApiKey() {
         return apiKey;
@@ -49,5 +50,13 @@ public class CopilotChatRequest {
 
     public void setConversation(List<CopilotMessage> conversation) {
         this.conversation = conversation == null ? new ArrayList<>() : conversation;
+    }
+
+    public boolean isIncludeProjectFiles() {
+        return includeProjectFiles;
+    }
+
+    public void setIncludeProjectFiles(boolean includeProjectFiles) {
+        this.includeProjectFiles = includeProjectFiles;
     }
 }

@@ -4,7 +4,9 @@ import com.cxalloy.integration.client.CxAlloyApiClient;
 import com.cxalloy.integration.dto.SyncResult;
 import com.cxalloy.integration.model.ApiSyncLog;
 import com.cxalloy.integration.model.Checklist;
+import com.cxalloy.integration.model.ChecklistStatusDate;
 import com.cxalloy.integration.repository.ChecklistRepository;
+import com.cxalloy.integration.repository.ChecklistStatusDateRepository;
 import com.fasterxml.jackson.databind.JsonNode;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -34,10 +36,15 @@ public class ChecklistService extends BaseProjectService {
     private static final int PAGE_SIZE = 500;
 
     private final ChecklistRepository checklistRepository;
+    private final ChecklistStatusDateRepository checklistStatusDateRepository;
     private final CxAlloyApiClient apiClient;
 
-    public ChecklistService(ChecklistRepository checklistRepository, CxAlloyApiClient apiClient) {
+    public ChecklistService(
+            ChecklistRepository checklistRepository,
+            ChecklistStatusDateRepository checklistStatusDateRepository,
+            CxAlloyApiClient apiClient) {
         this.checklistRepository = checklistRepository;
+        this.checklistStatusDateRepository = checklistStatusDateRepository;
         this.apiClient = apiClient;
     }
 
@@ -120,7 +127,9 @@ public class ChecklistService extends BaseProjectService {
 
     @Cacheable(value = "checklists-all")
     @Transactional(readOnly = true)
-    public List<Checklist> getAll() { return rehydrateTagLevels(checklistRepository.findAll()); }
+    public List<Checklist> getAll() {
+        return rehydrateStatusDates(rehydrateTagLevels(checklistRepository.findAll()));
+    }
 
     @Cacheable(value = "entity-by-id", key = "\"checklists-\" + #id")
     @Transactional(readOnly = true)
@@ -129,7 +138,7 @@ public class ChecklistService extends BaseProjectService {
     @Cacheable(value = "checklists-by-project", key = "#projectId")
     @Transactional(readOnly = true)
     public List<Checklist> getByProject(String projectId) {
-        return rehydrateTagLevels(checklistRepository.findByProjectId(projectId));
+        return rehydrateStatusDates(rehydrateTagLevels(checklistRepository.findByProjectId(projectId)));
     }
 
     /**
@@ -173,6 +182,28 @@ public class ChecklistService extends BaseProjectService {
 
             // Genuinely unclassifiable — ensure white is set (not null/blank)
             if (stored == null || stored.isBlank()) c.setTagLevel("white");
+        });
+        return list;
+    }
+
+    private List<Checklist> rehydrateStatusDates(List<Checklist> list) {
+        if (list.isEmpty()) {
+            return list;
+        }
+        java.util.Set<String> projectIds = new java.util.LinkedHashSet<>();
+        list.stream().map(Checklist::getProjectId).filter(pid -> pid != null && !pid.isBlank()).forEach(projectIds::add);
+        java.util.Map<String, ChecklistStatusDate> statusDates = new java.util.HashMap<>();
+        for (String projectId : projectIds) {
+            checklistStatusDateRepository.findByProjectId(projectId)
+                    .forEach(row -> statusDates.put(projectId + "::" + row.getChecklistExternalId(), row));
+        }
+        list.forEach(checklist -> {
+            ChecklistStatusDate row = statusDates.get(checklist.getProjectId() + "::" + checklist.getExternalId());
+            if (row != null) {
+                checklist.setLatestOpenDate(row.getLatestOpenDate());
+                checklist.setLatestInProgressDate(row.getLatestInProgressDate());
+                checklist.setLatestFinishedDate(row.getLatestFinishedDate());
+            }
         });
         return list;
     }
@@ -272,11 +303,17 @@ public class ChecklistService extends BaseProjectService {
                      getAsText(n, "equipment_id", null))));
         c.setAssignedTo(getAsText(n, "assigned_to", getAsText(n, "assignee", null)));
         c.setDueDate(getAsText(n, "due_date", getAsText(n, "planned_date", null)));
-        c.setCompletedDate(getAsText(n, "completed_date", getAsText(n, "date_completed", null)));
+        c.setCompletedDate(getAsText(n, "actual_finish_date",
+                           getAsText(n, "finished_at",
+                           getAsText(n, "closed_at",
+                           getAsText(n, "completed_date",
+                           getAsText(n, "date_completed", null))))));
         c.setCreatedAt(getAsText(n, "date_created",
                        getAsText(n, "created_at",
                        getAsText(n, "created_date", null))));
-        c.setUpdatedAt(getAsText(n, "updated_at", getAsText(n, "date_updated", null)));
+        c.setUpdatedAt(getAsText(n, "last_updated_at",
+                       getAsText(n, "updated_at",
+                       getAsText(n, "date_updated", null))));
         c.setRawJson(n.toString());
         c.setSyncedAt(now());
         return c;
@@ -425,6 +462,8 @@ public class ChecklistService extends BaseProjectService {
                 existing.setAssetId(c.getAssetId());
                 existing.setDueDate(c.getDueDate());
                 existing.setCompletedDate(c.getCompletedDate());
+                existing.setCreatedAt(c.getCreatedAt());
+                existing.setUpdatedAt(c.getUpdatedAt());
                 existing.setRawJson(c.getRawJson());
                 existing.setSyncedAt(now());
                 checklistRepository.save(existing);

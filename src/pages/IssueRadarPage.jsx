@@ -15,6 +15,7 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react'
 import { useProject } from '../context/ProjectContext'
 import { issuesApi } from '../services/api'
+import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip } from 'recharts'
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const ALL_STATUSES = ['Open', 'Correction In Progress', 'Ready For Verification', 'Closed']
@@ -82,24 +83,69 @@ function issueType(i) {
   return 'Mechanical Completion'
 }
 
+function companyFromRaw(raw) {
+  if (!raw || !raw.trim()) return 'Unassigned'
+  const value = raw.trim()
+  const dashIdx = value.indexOf(' - ')
+  if (dashIdx > 0) return value.substring(0, dashIdx).trim()
+  return value.split(' ')[0] || value
+}
+
 // Owner = assignee → reporter → location → 'Unassigned'
 function ownerOf(i) {
   return (i.assignee && i.assignee.trim()) || (i.reporter && i.reporter.trim()) || i.location || 'Unassigned'
 }
 
-// Company = first word of assignee/location (CxAlloy assignee is often "COMPANY - Name")
+function assignedCompanyOf(i) {
+  return companyFromRaw(i.assignee || i.assigned_to || i.location || 'Unassigned')
+}
+
+function reporterCompanyOf(i) {
+  return companyFromRaw(i.createdBy || i.created_by || i.reporter || 'Unassigned')
+}
+
 function companyOf(i) {
-  const raw = ownerOf(i)
-  if (raw === 'Unassigned') return 'Unassigned'
-  // "ELECTRICAL - John Smith" → "ELECTRICAL"
-  const dashIdx = raw.indexOf(' - ')
-  return dashIdx > 0 ? raw.substring(0, dashIdx).trim() : raw.split(' ')[0] || raw
+  return assignedCompanyOf(i)
 }
 
 function ageInDays(i) {
   const now = new Date()
   const d = new Date(i.createdAt || i.created_at || now)
   return isNaN(d) ? 0 : Math.max(0, Math.round((now - d) / 86400000))
+}
+
+function finishDateOf(i) {
+  const raw = i.actualFinishDate || i.actual_finish_date || i.completedDate || i.completed_date || i.updatedAt || i.updated_at || null
+  if (!raw) return null
+  const d = new Date(raw)
+  return isNaN(d) ? null : d
+}
+
+function daysToClose(i) {
+  const start = new Date(i.createdAt || i.created_at || 0)
+  const finish = finishDateOf(i)
+  if (isNaN(start) || !finish) return null
+  return Math.max(0, (finish - start) / 86400000)
+}
+
+function exportCsv(filename, rows) {
+  if (!rows?.length) return
+  const headers = Object.keys(rows[0])
+  const csvEscape = (value) => {
+    if (value === null || value === undefined) return ''
+    const text = String(value)
+    return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text
+  }
+  const csv = [headers.join(','), ...rows.map(row => headers.map(header => csvEscape(row[header])).join(','))].join('\n')
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+  URL.revokeObjectURL(url)
 }
 
 // High-cycle = issue that has been through correction loop:
@@ -116,10 +162,13 @@ function computeRadar(issues) {
     matrixRows: ALL_STATUSES.map(s => ({ status: s, ...PRIORITIES.reduce((a,p) => ({...a,[p]:0}),{}), total: 0 })),
     avgAgeByStatus: {}, globalAvgAge: 0, typeBreakdown: [], rootBreakdown: [],
     companyFlow: [], companyMatrix: [], topType: null, topRootCause: null,
-    topOwner: null, outsideThreshold: 0, ageThreshold: 0, totalRows: 0,
+    avgCloseByCompany: [], topOpenCompanies: [], topCloseCompany: null,
+    crossCompanyClosures: [], crossCompanySummary: [], avgClosureTime: 0,
+    topOwner: null, outsideThreshold: 0, ageThreshold: 0, totalRows: 0, openCount: 0, closedCount: 0,
   }
 
   const openIssues = issues.filter(i => normStatus(i.status) !== 'Closed')
+  const closedIssues = issues.filter(i => normStatus(i.status) === 'Closed')
   const highCycleIssues = issues.filter(isHighCycle)
 
   // Quality score: 0–100. 0 = all P1 Critical open. 100 = nothing open.
@@ -202,6 +251,66 @@ function computeRadar(issues) {
     .slice(0, 12)
     .map(([company, count]) => ({ company, count, pct: Math.round(count / openIssues.length * 100) }))
 
+  const topOpenCompanies = [...companyMap.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5)
+    .map(([company, count]) => ({ company, count }))
+
+  const closeMap = new Map()
+  closedIssues.forEach(i => {
+    const company = assignedCompanyOf(i)
+    const days = daysToClose(i)
+    if (days === null) return
+    const current = closeMap.get(company) || { totalDays: 0, count: 0 }
+    current.totalDays += days
+    current.count += 1
+    closeMap.set(company, current)
+  })
+  const avgCloseByCompany = [...closeMap.entries()]
+    .map(([company, value]) => ({
+      company,
+      avgDays: +(value.totalDays / value.count).toFixed(1),
+      closedIssues: value.count,
+    }))
+    .sort((a, b) => b.avgDays - a.avgDays)
+    .slice(0, 12)
+  const closeDurations = closedIssues.map(daysToClose).filter(days => days !== null)
+  const avgClosureTime = closeDurations.length
+    ? +(closeDurations.reduce((sum, days) => sum + days, 0) / closeDurations.length).toFixed(1)
+    : 0
+
+  const closurePairMap = new Map()
+  const summaryMap = new Map()
+  closedIssues.forEach(i => {
+    const raisedBy = reporterCompanyOf(i)
+    const closedBy = assignedCompanyOf(i)
+    if (!raisedBy || !closedBy || raisedBy === 'Unassigned' || closedBy === 'Unassigned' || raisedBy === closedBy) return
+
+    const pairKey = `${raisedBy}||${closedBy}`
+    closurePairMap.set(pairKey, (closurePairMap.get(pairKey) || 0) + 1)
+
+    const raisedSummary = summaryMap.get(raisedBy) || { company: raisedBy, raisedClosedByOthers: 0, closedRaisedByOthers: 0 }
+    raisedSummary.raisedClosedByOthers += 1
+    summaryMap.set(raisedBy, raisedSummary)
+
+    const closedSummary = summaryMap.get(closedBy) || { company: closedBy, raisedClosedByOthers: 0, closedRaisedByOthers: 0 }
+    closedSummary.closedRaisedByOthers += 1
+    summaryMap.set(closedBy, closedSummary)
+  })
+  const crossCompanyClosures = [...closurePairMap.entries()]
+    .map(([key, count]) => {
+      const [raisedBy, closedBy] = key.split('||')
+      return { raisedBy, closedBy, count }
+    })
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 6)
+  const crossCompanySummary = [...summaryMap.values()]
+    .map(row => ({
+      ...row,
+      net: row.closedRaisedByOthers - row.raisedClosedByOthers,
+    }))
+    .sort((a, b) => Math.abs(b.net) - Math.abs(a.net))
+
   // ── Company × Type cross-matrix for Cross-Company tab ─────────────────────
   const coTypeMap = new Map()
   issues.forEach(i => {
@@ -231,12 +340,19 @@ function computeRadar(issues) {
     matrixRows, avgAgeByStatus, globalAvgAge,
     typeBreakdown, rootBreakdown,
     companyFlow, companyMatrix,
+    avgCloseByCompany,
+    topOpenCompanies,
+    topCloseCompany: avgCloseByCompany[0] || null,
+    crossCompanyClosures,
+    crossCompanySummary,
+    avgClosureTime,
     topType:      typeBreakdown[0] || null,
     topRootCause: rootBreakdown[0] || null,
     topOwner:     companyFlow[0]   || null,
     outsideThreshold, ageThreshold,
     totalRows: issues.length,
     openCount: openIssues.length,
+    closedCount: closedIssues.length,
   }
 }
 
@@ -358,50 +474,100 @@ function StatisticsTab({ radar }) {
         </div>
       </div>
 
-      {/* Issue Type + Root Cause row */}
+      {/* Company matrix row */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
-        <IssueTypeCard data={radar.typeBreakdown} />
-        <RootCauseCard data={radar.rootBreakdown} />
+        <AvgTimeToCloseCard data={radar.avgCloseByCompany} />
+        <TopOpenCompaniesCard data={radar.topOpenCompanies} />
       </div>
     </div>
   )
 }
 
-// ─── Reusable breakdown cards ─────────────────────────────────────────────────
-function IssueTypeCard({ data }) {
+// ─── Company charts ────────────────────────────────────────────────────────────
+function AvgTimeToCloseCard({ data }) {
+  const exportRows = (data || []).map(row => ({
+    company: row.company,
+    avg_days_to_close: row.avgDays,
+    closed_issues: row.closedIssues,
+  }))
   return (
     <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 12, padding: '18px 20px' }}>
-      <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 2 }}>Issue Type Breakdown</div>
-      <div style={{ fontSize: 11, color: '#64748b', marginBottom: 14 }}>Different kinds of issues found in the current selection</div>
-      {(data || []).map(({ type, count, pct }, i) => (
-        <div key={i} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 0', borderBottom: i < data.length - 1 ? '1px solid var(--divider)' : 'none' }}>
-          <div>
-            <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>{type}</span>
-            <span style={{ fontSize: 11, color: '#64748b', marginLeft: 6 }}>{pct}% share</span>
-          </div>
-          <span style={{ fontSize: 15, fontWeight: 800, color: 'var(--text-primary)' }}>{count}</span>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
+        <div>
+          <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 2 }}>Avg Time to Close by Company</div>
+          <div style={{ fontSize: 11, color: '#64748b' }}>Average days to resolve issues with closed issue counts by company</div>
         </div>
-      ))}
-      {!data?.length && <div style={{ fontSize: 12, color: '#475569', padding: '20px 0' }}>No data</div>}
+        <button onClick={() => exportCsv('avg-time-to-close-by-company.csv', exportRows)} style={{ padding: '7px 12px', borderRadius: 8, background: 'transparent', border: '1px solid var(--border)', color: 'var(--text-primary)', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
+          Export
+        </button>
+      </div>
+      {data?.length ? (
+        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 132px', gap: 16, alignItems: 'stretch' }}>
+          <ResponsiveContainer width="100%" height={330}>
+            <BarChart data={data} layout="vertical" margin={{ top: 4, right: 12, left: 36, bottom: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="var(--divider)" horizontal={false} />
+              <XAxis type="number" tick={{ fill: '#94a3b8', fontSize: 11 }} axisLine={false} tickLine={false} />
+              <YAxis type="category" dataKey="company" width={160} tick={{ fill: 'var(--text-primary)', fontSize: 11 }} axisLine={false} tickLine={false} />
+              <Tooltip
+                formatter={(value, name) => {
+                  if (name === 'avgDays') return [`${value} days`, 'Avg close time']
+                  return [`${value}`, 'Closed issues']
+                }}
+                labelFormatter={(label, payload) => {
+                  const row = payload?.[0]?.payload
+                  return row ? `${row.company} | ${row.closedIssues} issues` : label
+                }}
+                contentStyle={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 10 }}
+              />
+              <Bar dataKey="avgDays" fill="#4f8df7" radius={[0, 4, 4, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+          <div style={{ height: 330, display: 'flex', flexDirection: 'column', justifyContent: 'space-evenly', paddingTop: 22, paddingBottom: 14 }}>
+            {data.map((row) => (
+              <div key={row.company} style={{ display: 'flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap' }}>
+                <span style={{ fontSize: 11, fontWeight: 700, color: '#94a3b8' }}>{row.closedIssues}</span>
+                <span style={{ fontSize: 11, color: '#64748b' }}>issues</span>
+                <span style={{ fontSize: 11, fontWeight: 700, color: '#f59e0b' }}>({row.avgDays}d)</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : (
+        <div style={{ fontSize: 12, color: '#475569', padding: '20px 0' }}>No closed issue timing data</div>
+      )}
     </div>
   )
 }
 
-function RootCauseCard({ data }) {
+function TopOpenCompaniesCard({ data }) {
+  const exportRows = (data || []).map(row => ({
+    company: row.company,
+    open_issues: row.count,
+  }))
   return (
     <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 12, padding: '18px 20px' }}>
-      <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 2 }}>Root Cause Breakdown</div>
-      <div style={{ fontSize: 11, color: '#64748b', marginBottom: 14 }}>Primary drivers behind issue churn and rework</div>
-      {(data || []).map(({ cause, count, pct, avgAge }, i) => (
-        <div key={i} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 0', borderBottom: i < data.length - 1 ? '1px solid var(--divider)' : 'none' }}>
-          <div>
-            <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>{cause}</span>
-            <span style={{ fontSize: 11, color: '#64748b', marginLeft: 6 }}>{pct}% share | {avgAge}d avg age</span>
-          </div>
-          <span style={{ fontSize: 15, fontWeight: 800, color: 'var(--text-primary)' }}>{count}</span>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
+        <div>
+          <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 2 }}>Top 5 Companies (Open Issues)</div>
+          <div style={{ fontSize: 11, color: '#64748b' }}>Companies with the most unresolved issues</div>
         </div>
-      ))}
-      {!data?.length && <div style={{ fontSize: 12, color: '#475569', padding: '20px 0' }}>No data</div>}
+        <button onClick={() => exportCsv('top-open-companies.csv', exportRows)} style={{ padding: '7px 12px', borderRadius: 8, background: 'transparent', border: '1px solid var(--border)', color: 'var(--text-primary)', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
+          Export
+        </button>
+      </div>
+      {data?.length ? (
+        <ResponsiveContainer width="100%" height={330}>
+          <BarChart data={data} margin={{ top: 4, right: 12, left: 8, bottom: 40 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="var(--divider)" vertical={false} />
+            <XAxis dataKey="company" angle={-40} textAnchor="end" height={70} tick={{ fill: 'var(--text-primary)', fontSize: 11 }} axisLine={false} tickLine={false} interval={0} />
+            <YAxis tick={{ fill: '#94a3b8', fontSize: 11 }} axisLine={false} tickLine={false} />
+            <Tooltip formatter={(value) => [`${value}`, 'Open issues']} contentStyle={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 10 }} />
+            <Bar dataKey="count" fill="#f59e0b" radius={[6, 6, 0, 0]} />
+          </BarChart>
+        </ResponsiveContainer>
+      ) : (
+        <div style={{ fontSize: 12, color: '#475569', padding: '20px 0' }}>No open issue company data</div>
+      )}
     </div>
   )
 }
@@ -468,37 +634,62 @@ function FlowAnalysisTab({ radar }) {
 
 // ─── Cross-Company Tab ────────────────────────────────────────────────────────
 function CrossCompanyTab({ radar }) {
-  const types = (radar.typeBreakdown || []).slice(0, 4).map(t => t.type)
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-      {/* Cross matrix: company × issue type */}
-      {radar.companyMatrix?.length > 0 && (
+      <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 12, padding: '18px 20px' }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 2 }}>Cross-Company Issue Closures</div>
+        <div style={{ fontSize: 11, color: '#64748b', marginBottom: 16 }}>Issues raised by one company but closed by a different company · {radar.crossCompanyClosures.length} major routes shown</div>
+        {radar.crossCompanyClosures?.length ? (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 16 }}>
+            {radar.crossCompanyClosures.map((row, index) => (
+              <div key={`${row.raisedBy}-${row.closedBy}-${index}`} style={{ background: 'rgba(245,158,11,0.06)', border: '1px solid rgba(245,158,11,0.25)', borderRadius: 12, padding: '16px 18px' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span style={{ fontSize: 11, fontWeight: 700, color: '#60a5fa', background: 'rgba(96,165,250,0.15)', borderRadius: 999, padding: '4px 8px' }}>Raised</span>
+                    <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)' }}>{row.raisedBy}</span>
+                  </div>
+                  <div style={{ fontSize: 11, color: '#fbbf24', fontWeight: 700 }}>Closed by</div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span style={{ fontSize: 11, fontWeight: 700, color: '#34d399', background: 'rgba(52,211,153,0.15)', borderRadius: 999, padding: '4px 8px' }}>Closed</span>
+                    <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)' }}>{row.closedBy}</span>
+                  </div>
+                  <div style={{ height: 1, background: 'rgba(245,158,11,0.2)' }} />
+                  <div style={{ fontSize: 34, fontWeight: 800, color: '#fbbf24', lineHeight: 1 }}>{row.count}</div>
+                  <div style={{ fontSize: 12, color: '#94a3b8' }}>issues</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div style={{ fontSize: 12, color: '#475569', padding: '12px 0' }}>No cross-company closures detected yet.</div>
+        )}
+      </div>
+
+      {radar.crossCompanySummary?.length > 0 && (
         <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 12, overflow: 'hidden' }}>
           <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--divider)' }}>
-            <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)' }}>Company × Issue Type Matrix</div>
-            <div style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>Cross-company issue distribution — {radar.totalRows} total rows</div>
+            <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)' }}>Company Involvement Summary</div>
+            <div style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>Issues raised by others vs issues closed for others</div>
           </div>
           <div style={{ overflowX: 'auto' }}>
             <table style={{ width: '100%', borderCollapse: 'collapse' }}>
               <thead>
                 <tr style={{ borderBottom: '1px solid var(--divider)' }}>
                   <th style={{ padding: '10px 16px', textAlign: 'left', fontSize: 10, fontWeight: 600, color: '#475569', textTransform: 'uppercase' }}>COMPANY</th>
-                  {types.map(t => (
-                    <th key={t} style={{ padding: '10px 12px', textAlign: 'right', fontSize: 10, fontWeight: 600, color: '#475569', textTransform: 'uppercase', whiteSpace: 'nowrap', maxWidth: 120 }}>
-                      {t.split(' ').slice(0, 2).join(' ')}
-                    </th>
-                  ))}
-                  <th style={{ padding: '10px 12px', textAlign: 'right', fontSize: 10, fontWeight: 600, color: '#475569', textTransform: 'uppercase' }}>TOTAL</th>
+                  <th style={{ padding: '10px 12px', textAlign: 'right', fontSize: 10, fontWeight: 600, color: '#475569', textTransform: 'uppercase' }}>ISSUES RAISED (CLOSED BY OTHERS)</th>
+                  <th style={{ padding: '10px 12px', textAlign: 'right', fontSize: 10, fontWeight: 600, color: '#475569', textTransform: 'uppercase' }}>ISSUES CLOSED (RAISED BY OTHERS)</th>
+                  <th style={{ padding: '10px 12px', textAlign: 'right', fontSize: 10, fontWeight: 600, color: '#475569', textTransform: 'uppercase' }}>NET</th>
                 </tr>
               </thead>
               <tbody>
-                {radar.companyMatrix.map((row, i) => (
+                {radar.crossCompanySummary.map((row, i) => (
                   <tr key={i} style={{ borderBottom: '1px solid var(--divider)', background: i % 2 === 1 ? 'var(--row-alt)' : 'transparent' }}>
                     <td style={{ padding: '11px 16px', fontSize: 12, color: 'var(--text-primary)', fontWeight: 600 }}>{row.company}</td>
-                    {types.map(t => (
-                      <td key={t} style={{ padding: '11px 12px', textAlign: 'right', fontSize: 13, fontWeight: row[t] > 0 ? 700 : 400, color: row[t] > 0 ? 'var(--text-primary)' : '#334155' }}>{row[t] || 0}</td>
-                    ))}
-                    <td style={{ padding: '11px 12px', textAlign: 'right', fontSize: 13, fontWeight: 700, color: '#60a5fa' }}>{row.total}</td>
+                    <td style={{ padding: '11px 12px', textAlign: 'right', fontSize: 13, fontWeight: 700, color: '#60a5fa' }}>{row.raisedClosedByOthers}</td>
+                    <td style={{ padding: '11px 12px', textAlign: 'right', fontSize: 13, fontWeight: 700, color: '#34d399' }}>{row.closedRaisedByOthers}</td>
+                    <td style={{ padding: '11px 12px', textAlign: 'right', fontSize: 13, fontWeight: 700, color: row.net >= 0 ? '#34d399' : '#f87171' }}>
+                      {row.net > 0 ? '+' : ''}{row.net}
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -506,11 +697,6 @@ function CrossCompanyTab({ radar }) {
           </div>
         </div>
       )}
-
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
-        <IssueTypeCard data={radar.typeBreakdown} />
-        <RootCauseCard data={radar.rootBreakdown} />
-      </div>
     </div>
   )
 }
@@ -728,12 +914,29 @@ export default function IssueRadarPage() {
         <p style={{ fontSize: 13, color: '#64748b', marginTop: 4 }}>Issue statistics, workflow bottlenecks, and cross-company impact.</p>
       </div>
 
+      {radar.totalRows > 0 && (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 14 }}>
+          {[
+            { label: 'Total Issues', value: radar.totalRows, sub: 'All synced issues', color: '#60a5fa' },
+            { label: 'Closed Issues', value: radar.closedCount, sub: `${radar.totalRows ? Math.round((radar.closedCount / radar.totalRows) * 100) : 0}% of total`, color: '#22c55e' },
+            { label: 'Open Issues', value: radar.openCount, sub: `${radar.totalRows ? Math.round((radar.openCount / radar.totalRows) * 100) : 0}% of total`, color: '#f87171' },
+            { label: 'Avg Issue Closure Time', value: `${radar.avgClosureTime.toFixed(2)}d`, sub: 'Based on assigned_to closures', color: '#f59e0b' },
+          ].map(card => (
+            <div key={card.label} style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 12, padding: '16px 18px' }}>
+              <div style={{ fontSize: 10, color: '#475569', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 6 }}>{card.label}</div>
+              <div style={{ fontSize: 28, fontWeight: 800, color: card.color, lineHeight: 1 }}>{card.value}</div>
+              <div style={{ fontSize: 11, color: '#64748b', marginTop: 4 }}>{card.sub}</div>
+            </div>
+          ))}
+        </div>
+      )}
+
       {/* Summary insight bar */}
       {radar.totalRows > 0 && (
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
           {[
-            { label: 'Focus', value: `${radar.topType?.type || 'N/A'} (${radar.topType?.pct || 0}%)` },
-            { label: 'Primary Root Cause', value: radar.topRootCause?.cause || 'N/A' },
+            { label: 'Avg Close Leader', value: radar.topCloseCompany ? `${radar.topCloseCompany.company} (${radar.topCloseCompany.avgDays}d)` : 'N/A' },
+            { label: 'Top Open Company', value: radar.topOpenCompanies?.[0] ? `${radar.topOpenCompanies[0].company} (${radar.topOpenCompanies[0].count} open)` : 'N/A' },
             { label: 'Main Load Owner', value: radar.topOwner ? `${radar.topOwner.company} (${radar.topOwner.count} open)` : 'N/A' },
           ].map(({ label, value }) => (
             <div key={label} style={{ padding: '6px 14px', borderRadius: 20, background: 'rgba(59,130,246,0.09)', border: '1px solid rgba(59,130,246,0.22)', fontSize: 12, fontWeight: 600, color: '#60a5fa' }}>
@@ -777,3 +980,4 @@ export default function IssueRadarPage() {
     </div>
   )
 }
+

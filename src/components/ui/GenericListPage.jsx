@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react'
 import ReactDOM from 'react-dom'
-import { Search, RefreshCw, X, ExternalLink, CheckCircle2, Clock, AlertCircle, BarChart2, ChevronDown } from 'lucide-react'
+import { Search, RefreshCw, X, ExternalLink, CheckCircle2, Clock, AlertCircle, BarChart2, ChevronDown, Download } from 'lucide-react'
 import { Table, StatusBadge, EmptyState, Skeleton, SyncResultCard } from './index'
 import toast from 'react-hot-toast'
 
@@ -260,10 +260,13 @@ export default function GenericListPage({
   entityType,          // 'checklists' | 'tasks' | 'assets' | 'issues' | 'persons' | 'companies' | 'roles'
   searchKeys = ['name', 'title', 'externalId'],
   showStats = true,
+  filterConfigs = [],
+  topContent = null,
 }) {
   const [items, setItems]               = useState([])
   const [loading, setLoading]           = useState(true)
   const [search, setSearch]             = useState('')
+  const [filters, setFilters]           = useState({})
   const [syncing, setSyncing]           = useState(false)
   const [syncResult, setSyncResult]     = useState(null)
   const [detail, setDetail]             = useState(null)
@@ -282,7 +285,8 @@ export default function GenericListPage({
   }, [fetchFn, activeProjectId])
 
   useEffect(() => { load() }, [load])
-  useEffect(() => { setVisibleCount(PAGE_SIZE) }, [search, activeProjectId])
+  useEffect(() => { setVisibleCount(PAGE_SIZE) }, [search, activeProjectId, filters])
+  useEffect(() => { setFilters({}) }, [activeProjectId, entityType])
 
   const handleSync = async () => {
     if (!syncFn) return
@@ -311,14 +315,63 @@ export default function GenericListPage({
     return { total, finished, inProg, pct }
   }, [items])
 
+  const filterOptions = useMemo(() =>
+    filterConfigs.map(config => {
+      const values = config.options?.length
+        ? config.options
+        : Array.from(new Set(items
+            .map(item => String(config.getValue ? config.getValue(item) : item[config.key] || '').trim())
+            .filter(Boolean)))
+            .sort((a, b) => a.localeCompare(b))
+
+      return { ...config, values }
+    }),
+  [filterConfigs, items])
+
   const filtered = useMemo(() =>
     items.filter(item =>
-      !search || searchKeys.some(k => String(item[k] || '').toLowerCase().includes(search.toLowerCase()))
-    ), [items, search, searchKeys])
+      (!search || searchKeys.some(k => String(item[k] || '').toLowerCase().includes(search.toLowerCase())))
+      && filterConfigs.every(config => {
+        const selected = filters[config.key]
+        if (!selected || selected === 'all') return true
+        const rawValue = config.getValue ? config.getValue(item) : item[config.key]
+        return String(rawValue || '').toLowerCase() === String(selected).toLowerCase()
+      })
+    ), [items, search, searchKeys, filterConfigs, filters])
 
   const visibleItems = useMemo(() => filtered.slice(0, visibleCount), [filtered, visibleCount])
   const hasMore   = visibleCount < filtered.length
   const remaining = Math.min(PAGE_SIZE, filtered.length - visibleCount)
+
+  const csvValue = (value) => {
+    if (value == null) return ''
+    if (Array.isArray(value)) return value.join(', ')
+    if (typeof value === 'object') return JSON.stringify(value)
+    return String(value)
+  }
+
+  const csvEscape = (value) => `"${csvValue(value).replace(/"/g, '""')}"`
+
+  const handleExportCsv = () => {
+    const exportColumns = columns.filter(column => column.key && !column.key.startsWith('_'))
+    const header = exportColumns.map(column => csvEscape(column.label)).join(',')
+    const rows = filtered.map(row =>
+      exportColumns.map(column => {
+        const value = column.exportValue ? column.exportValue(row[column.key], row) : row[column.key]
+        return csvEscape(value)
+      }).join(',')
+    )
+
+    const blob = new Blob([[header, ...rows].join('\r\n')], { type: 'text/csv;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `${entityType || 'records'}-${activeProjectId || 'workspace'}.csv`
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    URL.revokeObjectURL(url)
+  }
 
   // ── Table columns: user columns + detail icon only ──────────────────────────
   // CxAlloy links are available inside the detail modal (not as a separate column)
@@ -336,8 +389,18 @@ export default function GenericListPage({
     )
   }
 
+  const renderedTopContent = typeof topContent === 'function'
+    ? topContent({
+        items,
+        filteredItems: filtered,
+        loading,
+        activeProjectId,
+      })
+    : topContent
+
   return (
     <div className="space-y-5 animate-fade-in">
+      {renderedTopContent}
 
       {/* Stats bar */}
       {showStats && !loading && stats && stats.total > 0 && (
@@ -383,12 +446,29 @@ export default function GenericListPage({
           <input type="text" value={search} onChange={e => setSearch(e.target.value)}
             className="input-field pl-9" placeholder="Search..." />
         </div>
+        {filterOptions.map(config => (
+          <select
+            key={config.key}
+            value={filters[config.key] || 'all'}
+            onChange={e => setFilters(prev => ({ ...prev, [config.key]: e.target.value }))}
+            className="input-field w-auto"
+          >
+            <option value="all">{config.label}</option>
+            {config.values.map(option => (
+              <option key={option} value={option}>{option}</option>
+            ))}
+          </select>
+        ))}
         {syncFn && (
           <button onClick={handleSync} disabled={syncing} className="btn-secondary">
             <RefreshCw size={14} className={syncing ? 'animate-spin' : ''} />
             {syncing ? 'Syncing...' : 'Sync'}
           </button>
         )}
+        <button onClick={handleExportCsv} className="btn-secondary">
+          <Download size={14} />
+          Export CSV
+        </button>
         <div className="glass-card-light px-4 py-2 text-xs text-dark-400">
           <span className="font-700 text-white">{filtered.length}</span> records
         </div>

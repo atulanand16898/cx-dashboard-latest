@@ -9,6 +9,9 @@ frontend.log
 frontend.err.log
 backend/*.log
 backend/*.err.log
+backend/backend/
+analysis/
+rfs03-checklists-raw.csv
 pdf-smoke.html
 pdf-smoke.pdf
 sample-report-page1.png

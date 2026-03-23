@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react'
-import { Plus, Search, Filter, RefreshCw, Trash2, Edit2, X, ExternalLink, ChevronDown } from 'lucide-react'
+import { Plus, Search, Filter, RefreshCw, Trash2, Edit2, X, ExternalLink, ChevronDown, Download } from 'lucide-react'
 import { issuesApi } from '../services/api'
 import { useProject } from '../context/ProjectContext'
 import { Table, StatusBadge, PriorityBadge, Modal, SyncResultCard, EmptyState, Skeleton, DetailGrid } from '../components/ui'
@@ -8,6 +8,17 @@ import { AlertCircle } from 'lucide-react'
 
 const PAGE_SIZE = 20
 const defaultForm = { title: '', description: '', status: 'open', priority: 'medium', assignee: '', dueDate: '' }
+
+function fmtDate(v) {
+  if (!v) return '—'
+  try {
+    const d = new Date(v)
+    if (isNaN(d)) return v
+    return d.toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric' })
+  } catch {
+    return v
+  }
+}
 
 export default function IssuesPage() {
   const { activeProject } = useProject()
@@ -105,12 +116,41 @@ export default function IssuesPage() {
   const hasMore = visibleCount < filtered.length
   const remaining = Math.min(PAGE_SIZE, filtered.length - visibleCount)
 
+  const handleExportCsv = () => {
+    const exportColumns = [
+      ['ID', row => row.externalId],
+      ['Title', row => row.title],
+      ['Status', row => row.status],
+      ['Priority', row => row.priority],
+      ['Assignee', row => row.assignee],
+      ['Created', row => fmtDate(row.createdAt)],
+      ['Last Updated', row => fmtDate(row.updatedAt)],
+      ['Actual Finish', row => fmtDate(row.actualFinishDate)],
+      ['Due Date', row => row.dueDate],
+    ]
+    const escapeCsv = (value) => `"${String(value ?? '').replace(/"/g, '""')}"`
+    const header = exportColumns.map(([label]) => escapeCsv(label)).join(',')
+    const rows = filtered.map(row => exportColumns.map(([, getter]) => escapeCsv(getter(row))).join(','))
+    const blob = new Blob([[header, ...rows].join('\r\n')], { type: 'text/csv;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `issues-${activeProject?.externalId || 'workspace'}.csv`
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    URL.revokeObjectURL(url)
+  }
+
   const columns = [
     { key: 'externalId', label: 'ID', render: v => <span className="font-mono text-xs text-dark-400">{v || '—'}</span> },
     { key: 'title', label: 'Title', render: v => <span className="font-500 text-white max-w-xs truncate block">{v || '—'}</span> },
     { key: 'status', label: 'Status', render: v => <StatusBadge status={v} /> },
     { key: 'priority', label: 'Priority', render: v => <PriorityBadge priority={v} /> },
     { key: 'assignee', label: 'Assignee', render: v => v || '—' },
+    { key: 'createdAt', label: 'Created', render: v => <span className="font-mono text-xs text-dark-400">{fmtDate(v)}</span> },
+    { key: 'updatedAt', label: 'Last Updated', render: v => <span className="font-mono text-xs text-dark-400">{fmtDate(v)}</span> },
+    { key: 'actualFinishDate', label: 'Actual Finish', render: v => <span className="font-mono text-xs text-dark-400">{fmtDate(v)}</span> },
     { key: 'dueDate', label: 'Due Date', render: v => v || '—' },
     {
       key: '_actions', label: '', render: (_, row) => (
@@ -161,6 +201,11 @@ export default function IssuesPage() {
         <button onClick={handleSync} disabled={syncing} className="btn-secondary">
           <RefreshCw size={14} className={syncing ? 'animate-spin' : ''} />
           {syncing ? 'Syncing...' : 'Sync Issues'}
+        </button>
+
+        <button onClick={handleExportCsv} className="btn-secondary">
+          <Download size={14} />
+          Export CSV
         </button>
 
         <button onClick={openCreate} className="btn-primary">

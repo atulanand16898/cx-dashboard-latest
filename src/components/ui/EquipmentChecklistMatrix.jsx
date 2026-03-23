@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useState } from 'react'
 import { ChevronDown, ChevronRight, Search } from 'lucide-react'
 
 const C = {
@@ -314,10 +314,24 @@ function TypeGroupRow({ typeName, rows, isExpanded, onToggle }) {
   )
 }
 
-export default function EquipmentChecklistMatrix({ matrix, loading }) {
-  const [search, setSearch] = useState('')
-  const [statusFilter, setStatusFilter] = useState('All Statuses')
+export default function EquipmentChecklistMatrix({
+  matrix,
+  loading,
+  searchValue,
+  onSearchChange,
+  statusFilterValue,
+  onStatusFilterChange,
+  focusLabel,
+}) {
+  const [internalSearch, setInternalSearch] = useState('')
+  const [internalStatusFilter, setInternalStatusFilter] = useState('All Statuses')
   const [expanded, setExpanded] = useState({})
+
+  const search = searchValue ?? internalSearch
+  const statusFilter = statusFilterValue ?? internalStatusFilter
+
+  const setSearch = onSearchChange ?? setInternalSearch
+  const setStatusFilter = onStatusFilterChange ?? setInternalStatusFilter
 
   const statusOptions = useMemo(() => {
     if (!matrix?.rows) return ['All Statuses']
@@ -369,6 +383,11 @@ export default function EquipmentChecklistMatrix({ matrix, loading }) {
 
   const toggle = typeName => setExpanded(prev => ({ ...prev, [typeName]: !(prev[typeName] ?? false) }))
 
+  useEffect(() => {
+    if (!focusLabel) return
+    setExpanded((prev) => ({ ...prev, [focusLabel]: true }))
+  }, [focusLabel])
+
   if (loading) {
     return (
       <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 14, padding: 36, textAlign: 'center', color: C.muted }}>
@@ -393,7 +412,10 @@ export default function EquipmentChecklistMatrix({ matrix, loading }) {
         <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap' }}>
           <div>
             <div style={{ fontSize: 15, fontWeight: 700, color: C.text, marginBottom: 4 }}>Equipment-Checklist Matrix</div>
-            <div style={{ fontSize: 12, color: C.muted }}>Cross-reference of equipment and checklist status progression</div>
+            <div style={{ fontSize: 12, color: C.muted }}>
+              Cross-reference of equipment and checklist status progression
+              {focusLabel ? <span style={{ color: '#dbeafe' }}> • drilled into {focusLabel}</span> : null}
+            </div>
           </div>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
             <Pill label={`${matrix.totalUnits} units`} />

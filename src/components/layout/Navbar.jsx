@@ -1,41 +1,75 @@
-import React, { useEffect, useRef, useState } from 'react'
-import { NavLink, useNavigate, useLocation } from 'react-router-dom'
-import { Activity, CheckCircle2, RefreshCw, X } from 'lucide-react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
+import { NavLink, useLocation, useNavigate } from 'react-router-dom'
+import {
+  Activity,
+  BarChart3,
+  Bot,
+  Briefcase,
+  Building2,
+  CalendarDays,
+  CheckCircle2,
+  CheckSquare,
+  ChevronDown,
+  ClipboardList,
+  FileBarChart2,
+  FileText,
+  FolderKanban,
+  LayoutGrid,
+  LogOut,
+  Moon,
+  Radar,
+  RefreshCw,
+  Search,
+  ShieldCheck,
+  Sun,
+  UserRound,
+  Users,
+  Wrench,
+  X,
+} from 'lucide-react'
+import toast from 'react-hot-toast'
 import { useAuth } from '../../context/AuthContext'
 import { useTheme } from '../../context/ThemeContext'
 import { useProject } from '../../context/ProjectContext'
-import { assetsApi, checklistsApi, companiesApi, equipmentApi, personsApi, projectsApi, rolesApi, syncApi, tasksApi, issuesApi } from '../../services/api'
-import toast from 'react-hot-toast'
+import {
+  assetsApi,
+  checklistsApi,
+  companiesApi,
+  equipmentApi,
+  personsApi,
+  projectsApi,
+  rolesApi,
+  tasksApi,
+  issuesApi,
+} from '../../services/api'
 
-// Primary landing-page tabs — always visible in main navbar
-// Order matches modum.me exactly
 const PRIMARY_TABS = [
-  { label: 'Tracker Pulse',    to: '/tracker-pulse' },
-  { label: 'Planned vs Actual', to: '/planned-vs-actual' },
-  { label: 'Checklist Flow',   to: '/checklist-flow' },
-  { label: 'Issue Radar',      to: '/issue-radar' },
-  { label: 'AI Copilot',       to: '/ai-copilot' },
-  { label: 'Asset Readiness',  to: '/asset-readiness' },
-  { label: 'Reports',          to: '/reports' },
-  { label: 'Project Access',   to: '/project-access', adminOnly: true },
+  { label: 'Tracker Pulse', to: '/tracker-pulse', icon: LayoutGrid },
+  { label: 'Planned vs Actual', to: '/planned-vs-actual', icon: BarChart3 },
+  { label: 'Checklists Flow', to: '/asset-readiness', icon: ClipboardList },
+  { label: 'Issue Radar', to: '/issue-radar', icon: Radar },
+  { label: 'AI Copilot', to: '/ai-copilot', icon: Bot },
+  { label: 'Reports', to: '/reports', icon: FileBarChart2 },
+  { label: 'Project Access', to: '/project-access', icon: Briefcase, adminOnly: true },
 ]
 
-// Project-context tabs — shown in secondary bar only when a project is selected
-const PROJECT_TABS = [
-  { label: 'Tasks',      to: '/tasks' },
-  { label: 'Checklists', to: '/checklists' },
-  { label: 'Equipment',  to: '/equipment' },
-  { label: 'People',     to: '/persons' },
-  { label: 'Companies',  to: '/companies' },
-  { label: 'Roles',      to: '/roles' },
-  { label: 'Sync',       to: '/sync' },
+const PROJECT_MENU_ITEMS = [
+  { label: 'Tasks', to: '/tasks', icon: CheckSquare },
+  { label: 'Checklists', to: '/checklists', icon: ClipboardList },
+  { label: 'Issues', to: '/issues', icon: Radar },
+  { label: 'Equipment', to: '/equipment', icon: Wrench },
+  { label: 'Files', to: '/files', icon: FileText },
+  { label: 'People', to: '/persons', icon: Users },
+  { label: 'Companies', to: '/companies', icon: Building2 },
+  { label: 'Roles', to: '/roles', icon: UserRound },
+  { label: 'Sync', to: '/sync', icon: RefreshCw },
 ]
 
 const SYNC_STEPS = [
   { key: 'projects', label: 'Projects', run: (projectId) => projectsApi.syncOne(projectId) },
   { key: 'issues', label: 'Issues', run: (projectId) => issuesApi.syncAll(projectId) },
   { key: 'tasks', label: 'Tasks', run: (projectId) => tasksApi.sync(projectId) },
-  { key: 'checklists', label: 'Checklists', run: (projectId) => checklistsApi.sync(projectId) },
+  { key: 'checklists', label: 'Checklists', run: (projectId) => checklistsApi.syncWithStatusDates(projectId) },
   { key: 'equipment', label: 'Equipment', run: (projectId) => equipmentApi.sync(projectId) },
   { key: 'persons', label: 'Persons', run: (projectId) => personsApi.sync(projectId) },
   { key: 'companies', label: 'Companies', run: (projectId) => companiesApi.sync(projectId) },
@@ -44,40 +78,8 @@ const SYNC_STEPS = [
   { key: 'files', label: 'Files', run: null, optional: true, skipMessage: 'Skipped in quick sync. Run file sync separately when needed.' },
 ]
 
-function TabLink({ to, label, compact }) {
-  return (
-    <NavLink
-      to={to}
-      style={({ isActive }) => ({
-        padding: compact ? '5px 10px' : '6px 14px',
-        borderRadius: 8,
-        fontSize: compact ? 12 : 13,
-        fontWeight: 500,
-        color: isActive ? 'white' : '#64748b',
-        background: isActive ? '#0ea5e9' : 'transparent',
-        textDecoration: 'none',
-        transition: 'all 0.18s ease',
-        whiteSpace: 'nowrap',
-        flexShrink: 0,
-      })}
-      onMouseEnter={e => {
-        if (!e.currentTarget.style.background.includes('0ea5e9')) {
-          e.currentTarget.style.color = '#cbd5e1'
-        }
-      }}
-      onMouseLeave={e => {
-        if (!e.currentTarget.style.background.includes('0ea5e9')) {
-          e.currentTarget.style.color = '#64748b'
-        }
-      }}
-    >
-      {label}
-    </NavLink>
-  )
-}
-
 function formatDateTime(value) {
-  if (!value) return 'Not synced yet'
+  if (!value) return 'Never'
   try {
     return new Date(value).toLocaleString('en-US', {
       month: 'short',
@@ -91,6 +93,13 @@ function formatDateTime(value) {
   }
 }
 
+function getWeekLabel() {
+  const now = new Date()
+  const jan1 = new Date(now.getFullYear(), 0, 1)
+  const week = Math.ceil(((now - jan1) / 86400000 + jan1.getDay() + 1) / 7)
+  return `${now.getFullYear()}-W${String(week).padStart(2, '0')}`
+}
+
 function statusColors(status) {
   switch ((status || '').toUpperCase()) {
     case 'COMPLETED':
@@ -101,13 +110,15 @@ function statusColors(status) {
       return { color: '#fde68a', border: 'rgba(250,204,21,0.24)', background: 'rgba(250,204,21,0.10)' }
     case 'FAILED':
       return { color: '#fca5a5', border: 'rgba(248,113,113,0.24)', background: 'rgba(248,113,113,0.10)' }
+    case 'SKIPPED':
+      return { color: '#cbd5e1', border: 'rgba(148,163,184,0.22)', background: 'rgba(148,163,184,0.08)' }
     default:
       return { color: '#94a3b8', border: 'rgba(148,163,184,0.22)', background: 'rgba(148,163,184,0.08)' }
   }
 }
 
 function buildTableStatuses(projectName) {
-  return SYNC_STEPS.map(step => ({
+  return SYNC_STEPS.map((step) => ({
     key: step.key,
     label: step.label,
     status: 'PENDING',
@@ -183,47 +194,135 @@ function normalizeSyncResponse(stepKey, payload, fallbackProjectName) {
   }
 }
 
+function PrimaryTabLink({ tab }) {
+  const Icon = tab.icon
+
+  return (
+    <NavLink
+      to={tab.to}
+      style={({ isActive }) => ({
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 8,
+        minWidth: 0,
+        flex: '1 1 0',
+        height: 42,
+        padding: '0 12px',
+        borderRadius: 12,
+        border: isActive ? '1px solid rgba(14,165,233,0.5)' : '1px solid transparent',
+        background: isActive ? 'linear-gradient(180deg, rgba(14,165,233,0.28), rgba(14,165,233,0.14))' : 'transparent',
+        color: isActive ? '#f8fafc' : '#8ea4c8',
+        textDecoration: 'none',
+        fontSize: 13,
+        fontWeight: 700,
+        transition: 'all 0.18s ease',
+        boxShadow: isActive ? '0 10px 24px rgba(14,165,233,0.14)' : 'none',
+      })}
+    >
+      <Icon size={15} />
+      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{tab.label}</span>
+    </NavLink>
+  )
+}
+
+function ActionIconButton({ icon: Icon, label, onClick, active, disabled, accent = '#8ea4c8', spinning = false }) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      title={label}
+      style={{
+        width: 38,
+        height: 38,
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        borderRadius: 12,
+        border: `1px solid ${active ? 'rgba(14,165,233,0.55)' : 'rgba(255,255,255,0.08)'}`,
+        background: active ? 'rgba(14,165,233,0.16)' : 'rgba(255,255,255,0.03)',
+        color: disabled ? '#4b5563' : accent,
+        cursor: disabled ? 'not-allowed' : 'pointer',
+        transition: 'all 0.18s ease',
+        opacity: disabled ? 0.55 : 1,
+      }}
+    >
+      <Icon size={16} style={spinning ? { animation: 'spin 1s linear infinite' } : undefined} />
+    </button>
+  )
+}
+
 export default function Navbar() {
   const { logout, isAdmin } = useAuth()
   const { isDark, toggleTheme } = useTheme()
-  const { activeProject, fetchProjects } = useProject()
+  const {
+    activeProject,
+    fetchProjects,
+    projects,
+    selectedProjects,
+    toggleProject,
+    clearSelection,
+    period,
+    setPeriod,
+  } = useProject()
   const navigate = useNavigate()
   const location = useLocation()
   const closeTimerRef = useRef(null)
+  const moreRef = useRef(null)
+  const projectRef = useRef(null)
   const [syncStatus, setSyncStatus] = useState(null)
   const [syncWindowOpen, setSyncWindowOpen] = useState(false)
   const [syncStarting, setSyncStarting] = useState(false)
   const [lastUpdatedAt, setLastUpdatedAt] = useState('')
+  const [moreOpen, setMoreOpen] = useState(false)
+  const [projectOpen, setProjectOpen] = useState(false)
+  const [search, setSearch] = useState('')
 
-  // Detect if current page is a project-context page
-  const isProjectPage = PROJECT_TABS.some(t => location.pathname === t.to)
-  const hasProject = !!activeProject
+  const visiblePrimaryTabs = PRIMARY_TABS.filter((tab) => !tab.adminOnly || isAdmin)
+  const isProjectMenuRoute = PROJECT_MENU_ITEMS.some((tab) => tab.to === location.pathname)
+  const count = selectedProjects.length
+  const primaryProject = selectedProjects[0] || activeProject
+  const secondaryLine = count > 1
+    ? selectedProjects.slice(0, 2).map((project) => project.name).join(', ') + (count > 2 ? ` +${count - 2} more` : '')
+    : [primaryProject?.client, primaryProject?.location].filter(Boolean).join(' | ')
 
-  const visiblePrimaryTabs = PRIMARY_TABS.filter(tab => !tab.adminOnly || isAdmin)
+  const filteredProjects = useMemo(
+    () => projects.filter((project) =>
+      !search ||
+      (project.name || '').toLowerCase().includes(search.toLowerCase()) ||
+      (project.externalId || '').toLowerCase().includes(search.toLowerCase()) ||
+      (project.client || '').toLowerCase().includes(search.toLowerCase()) ||
+      (project.location || '').toLowerCase().includes(search.toLowerCase())
+    ),
+    [projects, search]
+  )
 
   useEffect(() => {
-    const key = activeProject?.externalId
-      ? `last_sync_completed_at:${activeProject.externalId}`
-      : 'last_sync_completed_at'
+    const key = activeProject?.externalId ? `last_sync_completed_at:${activeProject.externalId}` : 'last_sync_completed_at'
     setLastUpdatedAt(localStorage.getItem(key) || '')
-    return () => {
-      clearTimeout(closeTimerRef.current)
-    }
+    return () => clearTimeout(closeTimerRef.current)
   }, [activeProject?.externalId])
+
+  useEffect(() => {
+    const onMouseDown = (event) => {
+      if (moreRef.current && !moreRef.current.contains(event.target)) setMoreOpen(false)
+      if (projectRef.current && !projectRef.current.contains(event.target)) setProjectOpen(false)
+    }
+    document.addEventListener('mousedown', onMouseDown)
+    return () => document.removeEventListener('mousedown', onMouseDown)
+  }, [])
 
   const handleSyncFinished = async (data) => {
     setSyncStarting(false)
     const completedAt = data?.completedAt || new Date().toISOString()
-    const key = activeProject?.externalId
-      ? `last_sync_completed_at:${activeProject.externalId}`
-      : 'last_sync_completed_at'
+    const key = activeProject?.externalId ? `last_sync_completed_at:${activeProject.externalId}` : 'last_sync_completed_at'
     localStorage.setItem(key, completedAt)
     localStorage.setItem('last_sync_completed_at', completedAt)
     setLastUpdatedAt(completedAt)
     try {
       await fetchProjects()
     } catch {
-      // project refresh is best-effort
+      // best effort
     }
     closeTimerRef.current = setTimeout(() => {
       setSyncWindowOpen(false)
@@ -260,10 +359,10 @@ export default function Navbar() {
     for (const step of SYNC_STEPS) {
       if (!step.run) {
         completedSteps += 1
-        for (let i = 0; i < currentTables.length; i += 1) {
-          if (currentTables[i].key === step.key) {
-            currentTables[i] = {
-              ...currentTables[i],
+        for (let index = 0; index < currentTables.length; index += 1) {
+          if (currentTables[index].key === step.key) {
+            currentTables[index] = {
+              ...currentTables[index],
               status: 'SKIPPED',
               runningCount: 0,
               message: step.skipMessage || '',
@@ -271,7 +370,7 @@ export default function Navbar() {
             }
           }
         }
-        setSyncStatus(prev => ({
+        setSyncStatus((prev) => ({
           ...(prev || {}),
           running: completedSteps < SYNC_STEPS.length,
           progressPercent: Math.round((completedSteps / SYNC_STEPS.length) * 100),
@@ -282,12 +381,12 @@ export default function Navbar() {
         continue
       }
 
-      setSyncStatus(prev => ({
+      setSyncStatus((prev) => ({
         ...(prev || {}),
         running: true,
-        currentItem: `${step.label} • ${activeProject.name}`,
+        currentItem: `${step.label} - ${activeProject.name}`,
         lastUpdatedAt: new Date().toISOString(),
-        tableStatuses: currentTables.map(item =>
+        tableStatuses: currentTables.map((item) =>
           item.key === step.key
             ? { ...item, status: 'RUNNING', runningCount: 1 }
             : item
@@ -300,17 +399,17 @@ export default function Navbar() {
         anyFailures = anyFailures || normalized.status === 'FAILED' || normalized.status === 'PARTIAL'
         completedSteps += 1
 
-        for (let i = 0; i < currentTables.length; i += 1) {
-          if (currentTables[i].key === step.key) {
-            currentTables[i] = {
-              ...currentTables[i],
+        for (let index = 0; index < currentTables.length; index += 1) {
+          if (currentTables[index].key === step.key) {
+            currentTables[index] = {
+              ...currentTables[index],
               ...normalized,
               runningCount: 0,
             }
           }
         }
 
-        setSyncStatus(prev => ({
+        setSyncStatus((prev) => ({
           ...(prev || {}),
           running: completedSteps < SYNC_STEPS.length,
           progressPercent: Math.round((completedSteps / SYNC_STEPS.length) * 100),
@@ -318,14 +417,14 @@ export default function Navbar() {
           lastUpdatedAt: new Date().toISOString(),
           tableStatuses: [...currentTables],
         }))
-      } catch (err) {
+      } catch (error) {
         anyFailures = true
         completedSteps += 1
-        const message = err.response?.data?.message || `Failed to sync ${step.label.toLowerCase()}`
-        for (let i = 0; i < currentTables.length; i += 1) {
-          if (currentTables[i].key === step.key) {
-            currentTables[i] = {
-              ...currentTables[i],
+        const message = error.response?.data?.message || `Failed to sync ${step.label.toLowerCase()}`
+        for (let index = 0; index < currentTables.length; index += 1) {
+          if (currentTables[index].key === step.key) {
+            currentTables[index] = {
+              ...currentTables[index],
               status: 'FAILED',
               runningCount: 0,
               failedProjects: 1,
@@ -333,7 +432,7 @@ export default function Navbar() {
             }
           }
         }
-        setSyncStatus(prev => ({
+        setSyncStatus((prev) => ({
           ...(prev || {}),
           running: completedSteps < SYNC_STEPS.length,
           progressPercent: Math.round((completedSteps / SYNC_STEPS.length) * 100),
@@ -350,7 +449,9 @@ export default function Navbar() {
       complete: true,
       failed: anyFailures,
       progressPercent: 100,
-      currentItem: anyFailures ? `Selected project sync finished with warnings for ${activeProject.name}` : `Selected project sync completed for ${activeProject.name}`,
+      currentItem: anyFailures
+        ? `Selected project sync finished with warnings for ${activeProject.name}`
+        : `Selected project sync completed for ${activeProject.name}`,
       startedAt,
       completedAt: finishedAt,
       lastUpdatedAt: finishedAt,
@@ -366,159 +467,430 @@ export default function Navbar() {
   const tableStatuses = syncStatus?.tableStatuses || []
   const syncRunning = syncStarting
   const syncDone = !!syncStatus?.complete && !syncRunning
+  const dateStr = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
 
   return (
-    <header style={{
-      background: '#0d1628',
-      borderBottom: '1px solid rgba(255,255,255,0.07)',
-      position: 'sticky', top: 0, zIndex: 40,
-    }}>
-      {/* ── Row 1: Logo + Primary Tabs + Controls ── */}
-      <div style={{ display: 'flex', alignItems: 'center', height: 54, padding: '0 20px', gap: 0 }}>
-
-        {/* Logo */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginRight: 24, flexShrink: 0 }}>
-          <div style={{
-            width: 34, height: 34, borderRadius: 9,
-            background: 'linear-gradient(135deg, #0ea5e9, #2563eb)',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            boxShadow: '0 2px 12px rgba(14,165,233,0.35)',
-          }}>
-            <Activity size={16} color="white" />
+    <header
+      style={{
+        background: 'linear-gradient(180deg, rgba(11,19,35,0.98), rgba(13,22,40,0.98))',
+        borderBottom: '1px solid rgba(255,255,255,0.07)',
+        position: 'sticky',
+        top: 0,
+        zIndex: 40,
+        backdropFilter: 'blur(18px)',
+      }}
+    >
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 18,
+          minHeight: 68,
+          padding: '12px 24px',
+          borderBottom: '1px solid rgba(255,255,255,0.05)',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 240 }}>
+          <div
+            style={{
+              width: 40,
+              height: 40,
+              borderRadius: 12,
+              background: 'linear-gradient(135deg, #0ea5e9, #2563eb)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              boxShadow: '0 10px 24px rgba(14,165,233,0.35)',
+              flexShrink: 0,
+            }}
+          >
+            <Activity size={18} color="white" />
           </div>
           <div>
-            <div style={{ fontSize: 13, fontWeight: 700, color: 'white', lineHeight: 1.2 }}>MODEM IQ</div>
-            <div style={{ fontSize: 9.5, color: '#475569', lineHeight: 1.2 }}>Data-Driven Project Decisions</div>
+            <div style={{ fontSize: 14, fontWeight: 800, color: '#f8fafc', lineHeight: 1.15 }}>MODEM IQ</div>
+            <div style={{ fontSize: 10.5, color: '#6b7c99', lineHeight: 1.15 }}>Data-Driven Project Decisions</div>
           </div>
         </div>
 
-        {/* Primary nav tabs */}
-        <nav style={{ display: 'flex', alignItems: 'center', gap: 2, flex: 1, overflow: 'hidden' }}>
-          {visiblePrimaryTabs.map(tab => (
-            <TabLink key={tab.to} to={tab.to} label={tab.label} />
+        <nav style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1, minWidth: 0 }}>
+          {visiblePrimaryTabs.map((tab) => (
+            <PrimaryTabLink key={tab.to} tab={tab} />
           ))}
+
+          <div ref={moreRef} style={{ position: 'relative', flex: '0 0 122px' }}>
+            <button
+              onClick={() => setMoreOpen((open) => !open)}
+              style={{
+                width: '100%',
+                height: 42,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 8,
+                borderRadius: 12,
+                border: `1px solid ${isProjectMenuRoute || moreOpen ? 'rgba(14,165,233,0.5)' : 'rgba(255,255,255,0.08)'}`,
+                background: isProjectMenuRoute || moreOpen ? 'rgba(14,165,233,0.14)' : 'rgba(255,255,255,0.03)',
+                color: isProjectMenuRoute || moreOpen ? '#f8fafc' : '#8ea4c8',
+                fontSize: 13,
+                fontWeight: 700,
+                cursor: 'pointer',
+                transition: 'all 0.18s ease',
+              }}
+            >
+              <FolderKanban size={15} />
+              <span>More</span>
+              <ChevronDown size={14} style={{ transform: moreOpen ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 0.18s ease' }} />
+            </button>
+
+            {moreOpen && (
+              <div
+                style={{
+                  position: 'absolute',
+                  top: 'calc(100% + 10px)',
+                  right: 0,
+                  width: 260,
+                  background: '#101a2d',
+                  border: '1px solid rgba(255,255,255,0.08)',
+                  borderRadius: 16,
+                  boxShadow: '0 24px 60px rgba(2,6,23,0.45)',
+                  padding: 10,
+                  zIndex: 70,
+                }}
+              >
+                <div style={{ fontSize: 10, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.12em', padding: '6px 8px 10px' }}>
+                  Project Tools
+                </div>
+                <div style={{ display: 'grid', gap: 6 }}>
+                  {PROJECT_MENU_ITEMS.map((item) => {
+                    const Icon = item.icon
+                    const active = item.to === location.pathname
+                    return (
+                      <NavLink
+                        key={item.to}
+                        to={item.to}
+                        onClick={() => setMoreOpen(false)}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 10,
+                          padding: '11px 12px',
+                          borderRadius: 12,
+                          textDecoration: 'none',
+                          color: active ? '#f8fafc' : '#a7b6cf',
+                          background: active ? 'rgba(14,165,233,0.16)' : 'transparent',
+                          border: active ? '1px solid rgba(14,165,233,0.34)' : '1px solid transparent',
+                          fontSize: 13,
+                          fontWeight: 700,
+                        }}
+                      >
+                        <Icon size={15} />
+                        <span>{item.label}</span>
+                      </NavLink>
+                    )
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
         </nav>
+      </div>
 
-        {/* Right controls: sync + theme toggle + sign out */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexShrink: 0, marginLeft: 12 }}>
-          <button
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 16,
+          minHeight: 74,
+          padding: '14px 24px',
+          background: 'rgba(255,255,255,0.02)',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: 16, minWidth: 0, flex: 1 }}>
+          <div ref={projectRef} style={{ position: 'relative', minWidth: 360, maxWidth: 560, flex: '1 1 420px' }}>
+            <button
+              onClick={() => setProjectOpen((open) => !open)}
+              style={{
+                width: '100%',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: 12,
+                padding: '12px 14px',
+                borderRadius: 16,
+                border: '1px solid rgba(255,255,255,0.08)',
+                background: 'rgba(255,255,255,0.03)',
+                cursor: 'pointer',
+                textAlign: 'left',
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0 }}>
+                <div
+                  style={{
+                    width: 42,
+                    height: 42,
+                    borderRadius: 14,
+                    background: 'rgba(14,165,233,0.14)',
+                    border: '1px solid rgba(14,165,233,0.26)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    color: '#38bdf8',
+                    flexShrink: 0,
+                  }}
+                >
+                  <FolderKanban size={18} />
+                </div>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: 10, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.12em', marginBottom: 3 }}>
+                    Selected Project
+                  </div>
+                  <div style={{ fontSize: 15, fontWeight: 800, color: '#f8fafc', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    {count > 1 ? `${count} projects selected` : (primaryProject?.name || 'Select project')}
+                  </div>
+                  <div style={{ fontSize: 12, color: '#7f8ea8', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    {secondaryLine || 'Choose a project to scope the dashboard and sync flow.'}
+                  </div>
+                </div>
+              </div>
+              <ChevronDown size={16} color="#7f8ea8" style={{ flexShrink: 0, transform: projectOpen ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 0.18s ease' }} />
+            </button>
+
+            {projectOpen && (
+              <div
+                style={{
+                  position: 'absolute',
+                  top: 'calc(100% + 10px)',
+                  left: 0,
+                  width: '100%',
+                  background: '#101a2d',
+                  border: '1px solid rgba(255,255,255,0.08)',
+                  borderRadius: 18,
+                  boxShadow: '0 24px 60px rgba(2,6,23,0.45)',
+                  overflow: 'hidden',
+                  zIndex: 70,
+                }}
+              >
+                <div style={{ padding: '14px 16px 10px', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+                  <div style={{ position: 'relative' }}>
+                    <Search size={14} style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: '#64748b' }} />
+                    <input
+                      autoFocus
+                      type="text"
+                      placeholder="Search project, client, location"
+                      value={search}
+                      onChange={(event) => setSearch(event.target.value)}
+                      style={{
+                        width: '100%',
+                        padding: '10px 12px 10px 36px',
+                        borderRadius: 12,
+                        border: '1px solid rgba(255,255,255,0.08)',
+                        background: 'rgba(255,255,255,0.04)',
+                        color: '#f8fafc',
+                        fontSize: 12,
+                        outline: 'none',
+                        fontFamily: 'inherit',
+                      }}
+                    />
+                  </div>
+                </div>
+
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    padding: '10px 16px',
+                    borderBottom: '1px solid rgba(255,255,255,0.06)',
+                    fontSize: 11,
+                    color: '#7f8ea8',
+                  }}
+                >
+                  <span>{projects.length} projects loaded</span>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                    <span>{count} selected</span>
+                    {count > 0 && (
+                      <button
+                        onClick={clearSelection}
+                        style={{
+                          borderRadius: 999,
+                          border: '1px solid rgba(255,255,255,0.08)',
+                          background: 'transparent',
+                          color: '#cbd5e1',
+                          cursor: 'pointer',
+                          fontSize: 11,
+                          fontWeight: 700,
+                          padding: '4px 10px',
+                        }}
+                      >
+                        Clear
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                <div style={{ maxHeight: 360, overflowY: 'auto' }}>
+                  {filteredProjects.length === 0 && (
+                    <div style={{ padding: '24px 16px', textAlign: 'center', fontSize: 12, color: '#64748b' }}>
+                      No projects match "{search}"
+                    </div>
+                  )}
+
+                  {filteredProjects.map((project) => {
+                    const selected = selectedProjects.some((item) => item.id === project.id)
+                    const meta = [project.client, project.location, project.status].filter(Boolean).join(' | ')
+                    return (
+                      <div
+                        key={project.id}
+                        onClick={() => toggleProject(project)}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          gap: 12,
+                          padding: '12px 16px',
+                          cursor: 'pointer',
+                          background: selected ? 'rgba(14,165,233,0.09)' : 'transparent',
+                          borderLeft: selected ? '3px solid #38bdf8' : '3px solid transparent',
+                          borderBottom: '1px solid rgba(255,255,255,0.05)',
+                        }}
+                      >
+                        <div style={{ minWidth: 0 }}>
+                          <div style={{ fontSize: 13, fontWeight: 700, color: '#f8fafc' }}>{project.name}</div>
+                          {meta && <div style={{ fontSize: 11, color: '#7f8ea8', marginTop: 2 }}>{meta}</div>}
+                        </div>
+                        <span
+                          style={{
+                            flexShrink: 0,
+                            padding: '5px 10px',
+                            borderRadius: 999,
+                            fontSize: 10,
+                            fontWeight: 800,
+                            letterSpacing: '0.06em',
+                            color: selected ? '#38bdf8' : '#94a3b8',
+                            background: selected ? 'rgba(14,165,233,0.18)' : 'rgba(255,255,255,0.04)',
+                          }}
+                        >
+                          {selected ? 'SELECTED' : 'SELECT'}
+                        </span>
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+            <div
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 8,
+                padding: '10px 12px',
+                borderRadius: 14,
+                border: '1px solid rgba(255,255,255,0.08)',
+                background: 'rgba(255,255,255,0.03)',
+                color: '#a7b6cf',
+                fontSize: 12,
+                fontWeight: 700,
+              }}
+            >
+              <CalendarDays size={15} />
+              <span>{dateStr}</span>
+              <span style={{ color: '#5e718f' }}>•</span>
+              <span>{getWeekLabel()}</span>
+            </div>
+
+            <div
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 6,
+                padding: 4,
+                borderRadius: 14,
+                border: '1px solid rgba(255,255,255,0.08)',
+                background: 'rgba(255,255,255,0.03)',
+              }}
+            >
+              {['Overall', 'D', 'W', 'M'].map((value) => {
+                const active = period === value
+                return (
+                  <button
+                    key={value}
+                    onClick={() => setPeriod(value)}
+                    title={{ Overall: 'All time', D: 'Daily', W: 'Weekly', M: 'Monthly' }[value]}
+                    style={{
+                      minWidth: value === 'Overall' ? 78 : 36,
+                      height: 34,
+                      padding: value === 'Overall' ? '0 14px' : '0 12px',
+                      borderRadius: 10,
+                      border: 'none',
+                      background: active ? 'linear-gradient(180deg, #22c1ff, #0ea5e9)' : 'transparent',
+                      color: active ? '#ffffff' : '#9fb1cd',
+                      fontSize: 12,
+                      fontWeight: 800,
+                      cursor: 'pointer',
+                      boxShadow: active ? '0 10px 24px rgba(14,165,233,0.24)' : 'none',
+                    }}
+                  >
+                    {value}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+        </div>
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
+          <div style={{ textAlign: 'right', marginRight: 4 }}>
+            <div style={{ fontSize: 10, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.12em' }}>Last Updated</div>
+            <div style={{ fontSize: 12, color: '#dbe7fb', fontWeight: 700 }}>{formatDateTime(lastUpdatedAt)}</div>
+          </div>
+          <ActionIconButton
+            icon={RefreshCw}
+            label={activeProject ? `Sync ${activeProject.name}` : 'Select a project first'}
             onClick={startSync}
+            active={syncRunning}
             disabled={syncRunning || !activeProject}
-            title={activeProject ? `Sync selected project: ${activeProject.name}` : 'Select a project first'}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 8,
-              padding: '6px 10px',
-              borderRadius: 10,
-              border: '1px solid rgba(14,165,233,0.22)',
-              background: syncRunning ? 'rgba(14,165,233,0.12)' : 'rgba(255,255,255,0.03)',
-              color: syncRunning ? '#7dd3fc' : !activeProject ? '#64748b' : '#cbd5e1',
-              cursor: syncRunning || !activeProject ? 'not-allowed' : 'pointer',
-              opacity: activeProject ? 1 : 0.7,
-              transition: 'all 0.18s ease',
-            }}
-          >
-            <RefreshCw size={14} style={syncRunning ? { animation: 'spin 1s linear infinite' } : undefined} />
-            <span style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', lineHeight: 1.1 }}>
-              <span style={{ fontSize: 12, fontWeight: 700 }}>Sync Project</span>
-              <span style={{ fontSize: 10, color: '#64748b' }}>
-                Last updated {lastUpdatedAt ? formatDateTime(lastUpdatedAt) : 'Never'}
-              </span>
-            </span>
-          </button>
-
-          {/* Theme toggle pill */}
-          <button
+            accent={syncRunning ? '#7dd3fc' : '#e2e8f0'}
+            spinning={syncRunning}
+          />
+          <ActionIconButton
+            icon={isDark ? Sun : Moon}
+            label={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
             onClick={toggleTheme}
-            title={`Switch to ${isDark ? 'light' : 'dark'} mode`}
-            style={{
-              display: 'flex', alignItems: 'center', gap: 6,
-              background: 'none', border: 'none', cursor: 'pointer', padding: '4px 8px',
-              borderRadius: 8,
-              transition: 'background 0.15s',
+            active={isDark}
+            accent={isDark ? '#fbbf24' : '#cbd5e1'}
+          />
+          <ActionIconButton
+            icon={LogOut}
+            label="Sign out"
+            onClick={async () => {
+              await logout()
+              navigate('/login')
             }}
-            onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.05)'}
-            onMouseLeave={e => e.currentTarget.style.background = 'none'}
-          >
-            <span style={{ fontSize: 12, fontWeight: 600, color: '#94a3b8' }}>
-              {isDark ? 'Light' : 'Dark'}
-            </span>
-            <span style={{
-              width: 34, height: 20, borderRadius: 999,
-              background: isDark ? '#0ea5e9' : '#334155',
-              position: 'relative', display: 'inline-flex', alignItems: 'center',
-              transition: 'background 0.25s ease',
-              border: `1px solid ${isDark ? 'rgba(14,165,233,0.5)' : 'rgba(255,255,255,0.1)'}`,
-              flexShrink: 0,
-            }}>
-              <span style={{
-                position: 'absolute', top: 2,
-                left: isDark ? 16 : 2,
-                width: 14, height: 14, borderRadius: '50%',
-                background: 'white',
-                transition: 'left 0.25s ease',
-                boxShadow: '0 1px 4px rgba(0,0,0,0.3)',
-              }} />
-            </span>
-          </button>
-
-          <div style={{ width: 1, height: 20, background: 'rgba(255,255,255,0.08)', flexShrink: 0 }} />
-
-          <button
-            onClick={async () => { await logout(); navigate('/login') }}
-            style={{
-              background: 'none', border: 'none', cursor: 'pointer',
-              fontSize: 12, fontWeight: 500, color: '#64748b',
-              display: 'flex', alignItems: 'center', gap: 5,
-              padding: '4px 8px', borderRadius: 7,
-              transition: 'all 0.15s',
-            }}
-            onMouseEnter={e => { e.currentTarget.style.color = '#f87171'; e.currentTarget.style.background = 'rgba(248,113,113,0.08)' }}
-            onMouseLeave={e => { e.currentTarget.style.color = '#64748b'; e.currentTarget.style.background = 'none' }}
-          >
-            Sign Out
-          </button>
+            accent="#fda4af"
+          />
         </div>
       </div>
 
-      {/* ── Row 2: Project context tabs — only shown when a project is active ── */}
-      {hasProject && (
-        <div style={{
-          display: 'flex', alignItems: 'center', height: 36,
-          padding: '0 20px',
-          borderTop: '1px solid rgba(255,255,255,0.04)',
-          background: 'rgba(0,0,0,0.15)',
-          gap: 2,
-        }}>
-          {/* Small label */}
-          <span style={{
-            fontSize: 10, fontWeight: 600, color: '#334155',
-            textTransform: 'uppercase', letterSpacing: '0.08em',
-            marginRight: 8, flexShrink: 0,
-          }}>
-            Project:
-          </span>
-          {PROJECT_TABS.map(tab => (
-            <TabLink key={tab.to} to={tab.to} label={tab.label} compact />
-          ))}
-        </div>
-      )}
-
       {syncWindowOpen && (
-        <div style={{
-          position: 'fixed',
-          top: 72,
-          right: 20,
-          width: 440,
-          maxWidth: 'calc(100vw - 24px)',
-          background: '#0f172a',
-          border: '1px solid rgba(255,255,255,0.08)',
-          borderRadius: 18,
-          boxShadow: '0 22px 60px rgba(2,6,23,0.55)',
-          zIndex: 80,
-          overflow: 'hidden',
-        }}>
+        <div
+          style={{
+            position: 'fixed',
+            top: 132,
+            right: 20,
+            width: 440,
+            maxWidth: 'calc(100vw - 24px)',
+            background: '#0f172a',
+            border: '1px solid rgba(255,255,255,0.08)',
+            borderRadius: 18,
+            boxShadow: '0 22px 60px rgba(2,6,23,0.55)',
+            zIndex: 80,
+            overflow: 'hidden',
+          }}
+        >
           <div style={{ padding: '16px 18px', borderBottom: '1px solid rgba(255,255,255,0.06)', display: 'flex', justifyContent: 'space-between', gap: 12 }}>
             <div>
               <div style={{ fontSize: 15, fontWeight: 800, color: 'white', display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -587,18 +959,20 @@ export default function Navbar() {
                         {item.projectName || (item.status === 'COMPLETED' ? 'Finished' : item.status === 'PENDING' ? 'Waiting' : 'In progress')}
                       </div>
                     </div>
-                    <span style={{
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      padding: '6px 8px',
-                      borderRadius: 999,
-                      fontSize: 10,
-                      fontWeight: 800,
-                      color: colors.color,
-                      border: `1px solid ${colors.border}`,
-                      background: colors.background,
-                    }}>
+                    <span
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        padding: '6px 8px',
+                        borderRadius: 999,
+                        fontSize: 10,
+                        fontWeight: 800,
+                        color: colors.color,
+                        border: `1px solid ${colors.border}`,
+                        background: colors.background,
+                      }}
+                    >
                       {item.status}
                     </span>
                     <div style={{ fontSize: 12, color: '#cbd5e1', fontWeight: 700 }}>

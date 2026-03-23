@@ -17,6 +17,12 @@ public class SavedReportRequest {
     private String summaryText;
     private String safetyNotes;
     private String commercialNotes;
+    private String projectDescription;
+    private String clientName;
+    private String projectCode;
+    private String shiftWindow;
+    private String reportAuthor;
+    private String peopleOnSite;
 
     public String getProjectId() { return projectId; }
     public void setProjectId(String projectId) { this.projectId = projectId; }
@@ -42,4 +48,16 @@ public class SavedReportRequest {
     public void setSafetyNotes(String safetyNotes) { this.safetyNotes = safetyNotes; }
     public String getCommercialNotes() { return commercialNotes; }
     public void setCommercialNotes(String commercialNotes) { this.commercialNotes = commercialNotes; }
+    public String getProjectDescription() { return projectDescription; }
+    public void setProjectDescription(String projectDescription) { this.projectDescription = projectDescription; }
+    public String getClientName() { return clientName; }
+    public void setClientName(String clientName) { this.clientName = clientName; }
+    public String getProjectCode() { return projectCode; }
+    public void setProjectCode(String projectCode) { this.projectCode = projectCode; }
+    public String getShiftWindow() { return shiftWindow; }
+    public void setShiftWindow(String shiftWindow) { this.shiftWindow = shiftWindow; }
+    public String getReportAuthor() { return reportAuthor; }
+    public void setReportAuthor(String reportAuthor) { this.reportAuthor = reportAuthor; }
+    public String getPeopleOnSite() { return peopleOnSite; }
+    public void setPeopleOnSite(String peopleOnSite) { this.peopleOnSite = peopleOnSite; }
 }

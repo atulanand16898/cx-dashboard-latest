@@ -20,9 +20,9 @@ import {
   RolesPage,
 } from './pages/EntityPages'
 import FileStoragePage from './pages/FileStoragePage'
+import ProjectFilesPage from './pages/ProjectFilesPage'
 import PlannedVsActualPage from './pages/PlannedVsActualPage'
 import TrackerPulsePage from './pages/TrackerPulsePage'
-import ChecklistFlowPage from './pages/ChecklistFlowPage'
 import IssueRadarPage from './pages/IssueRadarPage'
 import AICopilotPage from './pages/AICopilotPage'
 import AssetReadinessPage from './pages/AssetReadinessPage'
@@ -67,11 +67,12 @@ export default function App() {
               }
             >
               <Route index element={<Navigate to="/tracker-pulse" replace />} />
-              <Route path="dashboard" element={<DashboardPage />} />
+              <Route path="dashboard" element={<Navigate to="/tracker-pulse" replace />} />
               <Route path="issues" element={<IssuesPage />} />
               <Route path="tasks" element={<TasksPage />} />
               <Route path="checklists" element={<ChecklistsPage />} />
               <Route path="equipment" element={<EquipmentPage />} />
+              <Route path="files" element={<ProjectFilesPage />} />
               <Route path="assets" element={<AssetsPage />} />
               <Route path="persons" element={<PersonsPage />} />
               <Route path="companies" element={<CompaniesPage />} />
@@ -80,7 +81,7 @@ export default function App() {
               <Route path="file-storage" element={<FileStoragePage />} />
               <Route path="planned-vs-actual" element={<PlannedVsActualPage />} />
               <Route path="tracker-pulse" element={<TrackerPulsePage />} />
-              <Route path="checklist-flow" element={<ChecklistFlowPage />} />
+              <Route path="checklist-flow" element={<Navigate to="/asset-readiness" replace />} />
               <Route path="issue-radar" element={<IssueRadarPage />} />
               <Route path="ai-copilot" element={<AICopilotPage />} />
               <Route path="asset-readiness" element={<AssetReadinessPage />} />
@@ -89,7 +90,7 @@ export default function App() {
               <Route path="project-access" element={<ProjectAccessPage />} />
             </Route>
 
-            <Route path="*" element={<Navigate to="/dashboard" replace />} />
+            <Route path="*" element={<Navigate to="/tracker-pulse" replace />} />
           </Routes>
         </ProjectProvider>
       </AuthProvider>

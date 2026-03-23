@@ -21,7 +21,7 @@ export default function LoginPage() {
     setLoading(true)
     try {
       await login(cleanUsername, cleanPassword)
-      navigate('/dashboard')
+      navigate('/tracker-pulse')
       toast.success('Welcome back!')
     } catch (err) {
       toast.error(err.response?.data?.message || err.message || 'Invalid credentials')
