@@ -30,6 +30,7 @@ public class SavedReportService {
             "summary", "personnel", "activities", "upcoming", "safety", "checklists", "issues", "tests", "equipment", "commercials"
     );
     private static final List<String> BROWSER_PATHS = List.of(
+            "/usr/bin/chromium-headless-shell",
             "/usr/bin/chromium",
             "/usr/bin/chromium-browser",
             "/usr/bin/google-chrome",
