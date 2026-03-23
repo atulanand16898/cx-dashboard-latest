@@ -6,10 +6,19 @@ import com.cxalloy.integration.repository.*;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.apache.pdfbox.pdmodel.PDDocument;
+import org.apache.pdfbox.pdmodel.PDPage;
+import org.apache.pdfbox.pdmodel.PDPageContentStream;
+import org.apache.pdfbox.pdmodel.common.PDRectangle;
+import org.apache.pdfbox.pdmodel.font.PDFont;
+import org.apache.pdfbox.pdmodel.font.PDType1Font;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
+import java.awt.Color;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -1065,7 +1074,11 @@ public class SavedReportService {
 
             return Files.readAllBytes(pdfPath);
         } catch (Exception e) {
-            throw new IllegalStateException("Failed to generate PDF report: " + e.getMessage(), e);
+            try {
+                return buildPdfWithPdfBox(report);
+            } catch (Exception fallback) {
+                throw new IllegalStateException("Failed to generate PDF report: " + e.getMessage(), fallback);
+            }
         } finally {
             try {
                 if (htmlPath != null) Files.deleteIfExists(htmlPath);
@@ -1400,8 +1413,102 @@ public class SavedReportService {
         }
     }
 
+    private byte[] buildPdfWithPdfBox(SavedReport report) throws IOException {
+        Map<String, Object> reportData = readMap(report.getReportJson());
+        Map<String, Object> project = asMap(reportData.get("project"));
+        Map<String, Object> summary = asMap(reportData.get("summary"));
+        Map<String, Object> executive = asMap(reportData.get("executive"));
+        Map<String, Object> projectDetails = asMap(executive.get("projectDetails"));
+        Map<String, Object> executiveSummary = asMap(executive.get("executiveSummary"));
+        Map<String, Object> periodInsights = asMap(executive.get("periodInsights"));
+        List<Map<String, Object>> checklistStatusTable = asListOfMaps(executive.get("checklistStatusTable"));
+        List<Map<String, Object>> issueStatusTable = asListOfMaps(executive.get("issueStatusTable"));
+        List<Map<String, Object>> tagSummary = asListOfMaps(executive.get("tagSummary"));
+        List<Map<String, Object>> trend4Weeks = asListOfMaps(executive.get("trend4Weeks"));
+        List<Map<String, Object>> peopleOnSite = asListOfMaps(executive.get("peopleOnSite"));
+        List<Map<String, Object>> equipmentMatrixRows = asListOfMaps(asMap(executive.get("equipmentMatrix")).get("rows"));
+        List<Map<String, Object>> overdueItems = asListOfMaps(executive.get("overdueItems"));
+        List<Map<String, Object>> staleChecklists = asListOfMaps(executive.get("staleChecklists"));
+        List<Map<String, Object>> openLongerThan30 = asListOfMaps(executive.get("openLongerThan30"));
+        List<Map<String, Object>> topIssueEquipment = asListOfMaps(executive.get("topIssueEquipment"));
+
+        try (PDDocument document = new PDDocument(); ByteArrayOutputStream output = new ByteArrayOutputStream()) {
+            PdfWriter writer = new PdfWriter(document);
+
+            writer.header(report.getTitle(), report.getSubtitle());
+            writer.section("Project Details");
+            writer.keyValue("Project", firstNonBlank((String) project.get("projectName"), report.getProjectName(), report.getProjectId()));
+            writer.keyValue("Client", stringValue(projectDetails.get("client")));
+            writer.keyValue("Location", stringValue(projectDetails.get("location")));
+            writer.keyValue("Project ID", stringValue(projectDetails.get("projectCode")));
+            writer.keyValue("Window", report.getDateFrom() + " to " + report.getDateTo());
+            writer.keyValue("Author", stringValue(projectDetails.get("author")));
+
+            writer.section("Executive Summary");
+            writer.paragraph(stringValue(executiveSummary.get("narrative")));
+            writer.metricRow(List.of(
+                    new PdfMetric("Checklists", metricValue(summary, "checklists", "total"), new Color(34, 197, 94)),
+                    new PdfMetric("Issues", metricValue(summary, "issues", "total"), new Color(245, 158, 11)),
+                    new PdfMetric("Tasks", metricValue(summary, "tasks", "total"), new Color(59, 130, 246)),
+                    new PdfMetric("Equipment", metricValue(summary, "equipment", "total"), new Color(148, 163, 184))
+            ));
+            writer.metricRow(List.of(
+                    new PdfMetric("Overall", stringValue(executiveSummary.get("overallCompletionPct")), new Color(34, 197, 94)),
+                    new PdfMetric("Plan", stringValue(executiveSummary.get("plannedCompletionPct")), new Color(59, 130, 246)),
+                    new PdfMetric("Forecast", stringValue(executiveSummary.get("forecastCompletion")), new Color(245, 158, 11)),
+                    new PdfMetric("Daily Pace", stringValue(executiveSummary.get("dailyRunRate")), new Color(239, 68, 68))
+            ));
+
+            writer.section("Period Insights");
+            writer.bullet("Tags granted: " + stringValue(periodInsights.get("tagsGranted")));
+            writer.bullet("Issues closed: " + stringValue(periodInsights.get("issuesClosed")));
+            writer.bullet("Tests done: " + stringValue(periodInsights.get("testsDone")));
+            writer.bullet("Started: " + stringValue(periodInsights.get("started")));
+
+            writer.section("Checklist Status");
+            writeSimpleRows(writer, checklistStatusTable, List.of("status", "count", "percentage"));
+            writer.section("Issue Status");
+            writeSimpleRows(writer, issueStatusTable, List.of("status", "count", "percentage"));
+            writer.section("Tag Summary");
+            writeSimpleRows(writer, tagSummary, List.of("tagLevel", "planned", "complete", "percentage"));
+
+            writer.newPage();
+            writer.section("People On Site");
+            writeSimpleRows(writer, peopleOnSite, List.of("name", "role", "onsiteOffsite", "task", "manDays"));
+            writer.section("Week on Week Trend");
+            writeSimpleRows(writer, trend4Weeks, List.of("week", "tagsGranted", "issuesClosed", "testsDone", "started"));
+            writer.section("Equipment Matrix - High Level");
+            writeSimpleRows(writer, equipmentMatrixRows, List.of("discipline", "equipmentType", "L1", "L2", "L3", "L4"));
+            writer.section("Checklist Watchlist");
+            writeSimpleRows(writer, overdueItems, List.of("name", "status", "dueDate", "daysLate"));
+            writeSimpleRows(writer, staleChecklists, List.of("name", "status", "ageDays"));
+            writer.section("Open Checklists > 30 Days");
+            writeSimpleRows(writer, openLongerThan30, List.of("name", "status", "openDays"));
+            writer.section("Top 5 Equipment With Max Issues");
+            writeSimpleRows(writer, topIssueEquipment, List.of("equipment", "type", "total", "open", "closed", "checklists"));
+
+            document.save(output);
+            return output.toByteArray();
+        }
+    }
+
     private String formatSvg(double value) {
         return String.format(Locale.US, "%.2f", value);
+    }
+
+    private void writeSimpleRows(PdfWriter writer, List<Map<String, Object>> rows, List<String> fields) throws IOException {
+        if (rows == null || rows.isEmpty()) {
+            writer.paragraph("No data available.");
+            return;
+        }
+        int limit = Math.min(rows.size(), 8);
+        for (int i = 0; i < limit; i++) {
+            Map<String, Object> row = rows.get(i);
+            String line = fields.stream()
+                    .map(field -> readableLabel(field) + ": " + stringValue(row.get(field)))
+                    .collect(Collectors.joining(" | "));
+            writer.bullet(line);
+        }
     }
 
     private void appendCsvRow(StringBuilder csv, String... cells) {
@@ -2149,6 +2256,160 @@ public class SavedReportService {
             row.put(String.valueOf(pairs[i]), pairs[i + 1]);
         }
         return row;
+    }
+
+    private record PdfMetric(String label, String value, Color color) {}
+
+    private static final class PdfWriter {
+        private static final PDFont FONT_REGULAR = PDType1Font.HELVETICA;
+        private static final PDFont FONT_BOLD = PDType1Font.HELVETICA_BOLD;
+
+        private final PDDocument document;
+        private PDPage page;
+        private PDPageContentStream content;
+        private float pageWidth;
+        private float pageHeight;
+        private float cursorY;
+
+        private PdfWriter(PDDocument document) throws IOException {
+            this.document = document;
+            newPage();
+        }
+
+        private void newPage() throws IOException {
+            closeCurrent();
+            this.page = new PDPage(new PDRectangle(PDRectangle.A4.getHeight(), PDRectangle.A4.getWidth()));
+            this.document.addPage(page);
+            this.pageWidth = page.getMediaBox().getWidth();
+            this.pageHeight = page.getMediaBox().getHeight();
+            this.content = new PDPageContentStream(document, page);
+            this.cursorY = pageHeight - 30;
+        }
+
+        private void header(String title, String subtitle) throws IOException {
+            writeWrapped(title, FONT_BOLD, 20, new Color(15, 23, 42), 30, pageWidth - 60, 24);
+            writeWrapped(subtitle, FONT_REGULAR, 10, new Color(71, 85, 105), 30, pageWidth - 60, 14);
+            cursorY -= 6;
+        }
+
+        private void section(String title) throws IOException {
+            ensureSpace(26);
+            cursorY -= 4;
+            writeLine(title, FONT_BOLD, 14, new Color(29, 78, 216), 30, cursorY);
+            cursorY -= 14;
+            drawDivider();
+            cursorY -= 8;
+        }
+
+        private void keyValue(String key, String value) throws IOException {
+            ensureSpace(14);
+            writeLine(key + ": " + value, FONT_REGULAR, 10, new Color(15, 23, 42), 34, cursorY);
+            cursorY -= 12;
+        }
+
+        private void paragraph(String text) throws IOException {
+            writeWrapped(text, FONT_REGULAR, 10, new Color(51, 65, 85), 34, pageWidth - 68, 13);
+            cursorY -= 4;
+        }
+
+        private void bullet(String text) throws IOException {
+            ensureSpace(14);
+            writeWrapped("- " + text, FONT_REGULAR, 10, new Color(30, 41, 59), 38, pageWidth - 76, 13);
+        }
+
+        private void metricRow(List<PdfMetric> metrics) throws IOException {
+            float x = 30;
+            float width = (pageWidth - 75) / 4f;
+            float height = 42;
+            ensureSpace(height + 8);
+            for (PdfMetric metric : metrics) {
+                fillRect(x, cursorY - height + 4, width, height, lighten(metric.color));
+                strokeRect(x, cursorY - height + 4, width, height, metric.color);
+                writeLine(metric.label, FONT_BOLD, 9, new Color(71, 85, 105), x + 8, cursorY - 10);
+                writeLine(metric.value, FONT_BOLD, 16, metric.color, x + 8, cursorY - 27);
+                x += width + 5;
+            }
+            cursorY -= height + 10;
+        }
+
+        private void ensureSpace(float needed) throws IOException {
+            if (cursorY - needed < 26) {
+                newPage();
+            }
+        }
+
+        private void drawDivider() throws IOException {
+            content.setStrokingColor(new Color(219, 234, 254));
+            content.moveTo(30, cursorY);
+            content.lineTo(pageWidth - 30, cursorY);
+            content.stroke();
+        }
+
+        private void writeWrapped(String text, PDFont font, float fontSize, Color color, float x, float width, float lineHeight) throws IOException {
+            if (!StringUtils.hasText(text)) {
+                return;
+            }
+            for (String line : wrapText(text, font, fontSize, width)) {
+                ensureSpace(lineHeight);
+                writeLine(line, font, fontSize, color, x, cursorY);
+                cursorY -= lineHeight;
+            }
+        }
+
+        private List<String> wrapText(String text, PDFont font, float fontSize, float maxWidth) throws IOException {
+            List<String> lines = new ArrayList<>();
+            StringBuilder current = new StringBuilder();
+            for (String word : text.split("\\s+")) {
+                String candidate = current.isEmpty() ? word : current + " " + word;
+                float width = font.getStringWidth(candidate) / 1000f * fontSize;
+                if (width > maxWidth && !current.isEmpty()) {
+                    lines.add(current.toString());
+                    current = new StringBuilder(word);
+                } else {
+                    current = new StringBuilder(candidate);
+                }
+            }
+            if (!current.isEmpty()) {
+                lines.add(current.toString());
+            }
+            return lines;
+        }
+
+        private void writeLine(String text, PDFont font, float fontSize, Color color, float x, float y) throws IOException {
+            content.beginText();
+            content.setFont(font, fontSize);
+            content.setNonStrokingColor(color);
+            content.newLineAtOffset(x, y);
+            content.showText(text == null ? "" : text);
+            content.endText();
+        }
+
+        private void fillRect(float x, float y, float width, float height, Color color) throws IOException {
+            content.setNonStrokingColor(color);
+            content.addRect(x, y, width, height);
+            content.fill();
+        }
+
+        private void strokeRect(float x, float y, float width, float height, Color color) throws IOException {
+            content.setStrokingColor(color);
+            content.addRect(x, y, width, height);
+            content.stroke();
+        }
+
+        private Color lighten(Color color) {
+            return new Color(
+                    Math.min(255, (int) (color.getRed() * 0.15 + 220)),
+                    Math.min(255, (int) (color.getGreen() * 0.15 + 220)),
+                    Math.min(255, (int) (color.getBlue() * 0.15 + 220))
+            );
+        }
+
+        private void closeCurrent() throws IOException {
+            if (content != null) {
+                content.close();
+                content = null;
+            }
+        }
     }
 
     private record Range(LocalDate from, LocalDate to) {}
