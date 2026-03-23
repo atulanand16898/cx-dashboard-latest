@@ -1049,22 +1049,33 @@ public class SavedReportService {
     private byte[] buildPdf(SavedReport report) {
         Path htmlPath = null;
         Path pdfPath = null;
+        Path browserProfileDir = null;
+        Path browserRuntimeDir = null;
         try {
             htmlPath = Files.createTempFile("saved-report-", ".html");
             pdfPath = Files.createTempFile("saved-report-", ".pdf");
+            browserProfileDir = Files.createTempDirectory("saved-report-browser-profile-");
+            browserRuntimeDir = Files.createTempDirectory("saved-report-browser-runtime-");
             Files.writeString(htmlPath, buildPdfHtml(report), StandardCharsets.UTF_8);
 
             String browserPath = findBrowserBinary();
-            Process process = new ProcessBuilder(
+            ProcessBuilder processBuilder = new ProcessBuilder(
                     browserPath,
                     "--headless",
                     "--disable-gpu",
                     "--no-sandbox",
+                    "--disable-setuid-sandbox",
                     "--disable-dev-shm-usage",
+                    "--no-zygote",
+                    "--allow-file-access-from-files",
+                    "--user-data-dir=" + browserProfileDir,
                     "--no-pdf-header-footer",
                     "--print-to-pdf=" + pdfPath.toString(),
                     htmlPath.toUri().toString()
-            ).redirectErrorStream(true).start();
+            ).redirectErrorStream(true);
+            processBuilder.environment().put("HOME", browserProfileDir.toString());
+            processBuilder.environment().put("XDG_RUNTIME_DIR", browserRuntimeDir.toString());
+            Process process = processBuilder.start();
 
             String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
             int exitCode = process.waitFor();
@@ -1089,6 +1100,28 @@ public class SavedReportService {
             }
             try {
                 if (pdfPath != null) Files.deleteIfExists(pdfPath);
+            } catch (Exception ignored) {
+            }
+            try {
+                if (browserProfileDir != null) Files.walk(browserProfileDir)
+                        .sorted(Comparator.reverseOrder())
+                        .forEach(path -> {
+                            try {
+                                Files.deleteIfExists(path);
+                            } catch (Exception ignored) {
+                            }
+                        });
+            } catch (Exception ignored) {
+            }
+            try {
+                if (browserRuntimeDir != null) Files.walk(browserRuntimeDir)
+                        .sorted(Comparator.reverseOrder())
+                        .forEach(path -> {
+                            try {
+                                Files.deleteIfExists(path);
+                            } catch (Exception ignored) {
+                            }
+                        });
             } catch (Exception ignored) {
             }
         }
