@@ -30,6 +30,10 @@ public class SavedReportService {
             "summary", "personnel", "activities", "upcoming", "safety", "checklists", "issues", "tests", "equipment", "commercials"
     );
     private static final List<String> BROWSER_PATHS = List.of(
+            "/usr/bin/chromium",
+            "/usr/bin/chromium-browser",
+            "/usr/bin/google-chrome",
+            "/usr/bin/google-chrome-stable",
             "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
             "C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe",
             "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
@@ -1045,6 +1049,8 @@ public class SavedReportService {
                     browserPath,
                     "--headless",
                     "--disable-gpu",
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
                     "--no-pdf-header-footer",
                     "--print-to-pdf=" + pdfPath.toString(),
                     htmlPath.toUri().toString()
@@ -1405,6 +1411,10 @@ public class SavedReportService {
     }
 
     private String findBrowserBinary() {
+        String explicit = System.getenv("BROWSER_BIN");
+        if (StringUtils.hasText(explicit) && Files.exists(Path.of(explicit))) {
+            return explicit;
+        }
         return BROWSER_PATHS.stream()
                 .filter(path -> Files.exists(Path.of(path)))
                 .findFirst()

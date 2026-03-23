@@ -15,6 +15,12 @@ FROM eclipse-temurin:17-jre
 
 WORKDIR /app
 
+# Install Chromium for server-side PDF rendering.
+USER root
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends chromium fonts-dejavu-core ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
 # Non-root user for security
 RUN groupadd --system spring && useradd --system --gid spring spring
 USER spring
