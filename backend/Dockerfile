@@ -11,13 +11,21 @@ COPY src ./src
 RUN mvn clean package -DskipTests -q
 
 # ─── Stage 2: Runtime ─────────────────────────────────────────────────────────
-FROM eclipse-temurin:17-jre
+FROM debian:bookworm-slim
 
 WORKDIR /app
 
-# Non-root user for security
 USER root
-RUN groupadd --system spring && useradd --system --gid spring spring
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        openjdk-17-jre-headless \
+        chromium \
+        fonts-dejavu-core \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --system spring \
+    && useradd --system --gid spring spring
+ENV BROWSER_BIN=/usr/bin/chromium
 USER spring
 
 COPY --from=builder /app/target/cxalloy-integration-1.0.0.jar app.jar
