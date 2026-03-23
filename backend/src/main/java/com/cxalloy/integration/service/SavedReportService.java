@@ -1490,6 +1490,7 @@ public class SavedReportService {
             writer.section("Top 5 Equipment With Max Issues");
             writeSimpleRows(writer, topIssueEquipment, List.of("equipment", "type", "total", "open", "closed", "checklists"));
 
+            writer.close();
             document.save(output);
             return output.toByteArray();
         }
@@ -2413,6 +2414,10 @@ public class SavedReportService {
                 content.close();
                 content = null;
             }
+        }
+
+        private void close() throws IOException {
+            closeCurrent();
         }
     }
 
