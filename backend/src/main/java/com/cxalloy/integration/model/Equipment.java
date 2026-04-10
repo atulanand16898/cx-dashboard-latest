@@ -20,7 +20,9 @@ import java.time.LocalDateTime;
     @Index(name = "idx_equipment_external_id",  columnList = "external_id"),
     @Index(name = "idx_equipment_project_id",   columnList = "project_id"),
     @Index(name = "idx_equipment_status",        columnList = "status"),
-    @Index(name = "idx_equipment_asset_type",   columnList = "equipment_type")
+    @Index(name = "idx_equipment_asset_type",   columnList = "equipment_type"),
+    @Index(name = "idx_equipment_provider",     columnList = "provider"),
+    @Index(name = "idx_equipment_source_key",   columnList = "source_key")
 })
 public class Equipment {
 
@@ -30,6 +32,12 @@ public class Equipment {
     /** CxAlloy equipment_id */
     @Column(name = "external_id")
     private String externalId;
+
+    @Column(name = "provider")
+    private String provider = DataProvider.CXALLOY.getKey();
+
+    @Column(name = "source_key", unique = true)
+    private String sourceKey;
 
     @Column(name = "project_id")
     private String projectId;
@@ -108,6 +116,8 @@ public class Equipment {
     // ── Getters / setters ────────────────────────────────────────────────────
     public Long getId() { return id; } public void setId(Long id) { this.id = id; }
     public String getExternalId() { return externalId; } public void setExternalId(String v) { this.externalId = v; }
+    public String getProvider() { return provider; } public void setProvider(String v) { this.provider = v; }
+    public String getSourceKey() { return sourceKey; } public void setSourceKey(String v) { this.sourceKey = v; }
     public String getProjectId() { return projectId; } public void setProjectId(String v) { this.projectId = v; }
     public String getName() { return name; } public void setName(String v) { this.name = v; }
     public String getTag() { return tag; } public void setTag(String v) { this.tag = v; }

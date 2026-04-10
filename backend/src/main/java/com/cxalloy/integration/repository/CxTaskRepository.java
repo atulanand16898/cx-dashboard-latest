@@ -6,8 +6,13 @@ import java.util.List; import java.util.Optional;
 @Repository
 public interface CxTaskRepository extends JpaRepository<CxTask, Long> {
     Optional<CxTask> findByExternalId(String externalId);
+    List<CxTask> findAllByExternalId(String externalId);
+    Optional<CxTask> findByExternalIdAndProvider(String externalId, String provider);
+    Optional<CxTask> findBySourceKey(String sourceKey);
     List<CxTask> findByProjectId(String projectId);
     List<CxTask> findByProjectIdAndStatus(String projectId, String status);
     List<CxTask> findByIssueId(String issueId);
     boolean existsByExternalId(String externalId);
+    boolean existsBySourceKey(String sourceKey);
+    long countByProjectIdAndProviderIgnoreCase(String projectId, String provider);
 }

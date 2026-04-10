@@ -12,5 +12,9 @@ public interface EquipmentRepository extends JpaRepository<Equipment, Long> {
     List<Equipment> findByProjectId(String projectId);
     List<Equipment> findByProjectIdAndEquipmentType(String projectId, String equipmentType);
     Optional<Equipment> findByExternalId(String externalId);
+    List<Equipment> findAllByExternalId(String externalId);
+    Optional<Equipment> findByExternalIdAndProvider(String externalId, String provider);
+    Optional<Equipment> findBySourceKey(String sourceKey);
     Optional<Equipment> findByExternalIdAndProjectId(String externalId, String projectId);
+    long countByProjectIdAndProviderIgnoreCase(String projectId, String provider);
 }

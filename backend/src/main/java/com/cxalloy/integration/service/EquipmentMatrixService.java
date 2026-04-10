@@ -32,30 +32,42 @@ public class EquipmentMatrixService {
     private final ChecklistRepository checklistRepository;
     private final IssueRepository issueRepository;
     private final ObjectMapper objectMapper;
+    private final ProviderContextService providerContextService;
 
     public EquipmentMatrixService(
             EquipmentRepository equipmentRepository,
             ChecklistRepository checklistRepository,
             IssueRepository issueRepository,
-            ObjectMapper objectMapper) {
+            ObjectMapper objectMapper,
+            ProviderContextService providerContextService) {
         this.equipmentRepository = equipmentRepository;
         this.checklistRepository = checklistRepository;
         this.issueRepository = issueRepository;
         this.objectMapper = objectMapper;
+        this.providerContextService = providerContextService;
     }
 
     public EquipmentMatrixDto buildMatrix(String projectId) {
         List<Equipment> equipmentList = projectId != null
                 ? equipmentRepository.findByProjectId(projectId)
                 : equipmentRepository.findAll();
+        equipmentList = equipmentList.stream()
+                .filter(equipment -> providerContextService.matchesCurrentProvider(equipment.getProvider()))
+                .toList();
 
         List<Checklist> checklists = projectId != null
                 ? checklistRepository.findByProjectId(projectId)
                 : checklistRepository.findAll();
+        checklists = checklists.stream()
+                .filter(checklist -> providerContextService.matchesCurrentProvider(checklist.getProvider()))
+                .toList();
 
         List<Issue> issues = projectId != null
                 ? issueRepository.findByProjectId(projectId)
                 : issueRepository.findAll();
+        issues = issues.stream()
+                .filter(issue -> providerContextService.matchesCurrentProvider(issue.getProvider()))
+                .toList();
 
         Map<String, List<Checklist>> checklistsByAssetId = new LinkedHashMap<>();
         Map<String, List<Checklist>> checklistsByAssetName = new LinkedHashMap<>();

@@ -6,6 +6,7 @@ import java.time.LocalDateTime;
 @Entity
 @Table(name = "tracker_briefs", indexes = {
     @Index(name = "idx_briefs_project_id", columnList = "project_id"),
+    @Index(name = "idx_briefs_provider",   columnList = "provider"),
     @Index(name = "idx_briefs_period",     columnList = "period"),
     @Index(name = "idx_briefs_exported_at",columnList = "exported_at"),
 })
@@ -16,6 +17,9 @@ public class TrackerBrief {
 
     @Column(name = "project_id", nullable = false)
     private String projectId;
+
+    @Column(name = "provider")
+    private String provider = DataProvider.CXALLOY.getKey();
 
     @Column(name = "title")
     private String title;
@@ -52,6 +56,8 @@ public class TrackerBrief {
     public void          setId(Long v)   { this.id = v; }
     public String        getProjectId()  { return projectId; }
     public void          setProjectId(String v)  { this.projectId = v; }
+    public String        getProvider()   { return provider; }
+    public void          setProvider(String v)   { this.provider = v; }
     public String        getTitle()      { return title; }
     public void          setTitle(String v)      { this.title = v; }
     public String        getSubtitle()   { return subtitle; }

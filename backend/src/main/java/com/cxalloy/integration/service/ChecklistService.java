@@ -5,13 +5,17 @@ import com.cxalloy.integration.dto.SyncResult;
 import com.cxalloy.integration.model.ApiSyncLog;
 import com.cxalloy.integration.model.Checklist;
 import com.cxalloy.integration.model.ChecklistStatusDate;
+import com.cxalloy.integration.model.DataProvider;
 import com.cxalloy.integration.repository.ChecklistRepository;
 import com.cxalloy.integration.repository.ChecklistStatusDateRepository;
 import com.fasterxml.jackson.databind.JsonNode;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.util.StringUtils;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Optional;
 import org.springframework.cache.annotation.CacheEvict;
@@ -38,14 +42,20 @@ public class ChecklistService extends BaseProjectService {
     private final ChecklistRepository checklistRepository;
     private final ChecklistStatusDateRepository checklistStatusDateRepository;
     private final CxAlloyApiClient apiClient;
+    private final FacilityGridChecklistService facilityGridChecklistService;
+    private final ChecklistStatusDateService checklistStatusDateService;
 
     public ChecklistService(
             ChecklistRepository checklistRepository,
             ChecklistStatusDateRepository checklistStatusDateRepository,
-            CxAlloyApiClient apiClient) {
+            CxAlloyApiClient apiClient,
+            FacilityGridChecklistService facilityGridChecklistService,
+            ChecklistStatusDateService checklistStatusDateService) {
         this.checklistRepository = checklistRepository;
         this.checklistStatusDateRepository = checklistStatusDateRepository;
         this.apiClient = apiClient;
+        this.facilityGridChecklistService = facilityGridChecklistService;
+        this.checklistStatusDateService = checklistStatusDateService;
     }
 
     @Caching(evict = {
@@ -53,6 +63,9 @@ public class ChecklistService extends BaseProjectService {
         @CacheEvict(value = "checklists-all", allEntries = true)
     })
     public SyncResult syncChecklists(String projectId) {
+        if (currentProvider() == DataProvider.FACILITY_GRID) {
+            return facilityGridChecklistService.syncAllChecklists(projectId);
+        }
         long start = System.currentTimeMillis();
         String pid = resolveProjectId(projectId);
         ApiSyncLog log = startLog("/checklist", "GET");
@@ -69,8 +82,8 @@ public class ChecklistService extends BaseProjectService {
                 // covers the body, so each page has a different signature, which is fine
                 // because we sign each request independently.
                 String body = page == 1
-                    ? "{\"project_id\":" + pid + "}"
-                    : "{\"project_id\":" + pid + ",\"page\":" + page + "}";
+                    ? jsonBodyWithProjectId(pid)
+                    : jsonBodyWithProjectIdAndPage(pid, page);
                 logger.debug("Fetching checklists page {} for project {} via POST /checklist", page, pid);
                 String raw = apiClient.post("/checklist", body);
 
@@ -111,6 +124,11 @@ public class ChecklistService extends BaseProjectService {
                 }
             }
 
+            int duplicatesRemoved = cleanupCurrentProviderDuplicates(pid);
+            if (duplicatesRemoved > 0) {
+                logger.info("Removed {} duplicate checklist rows for project {}", duplicatesRemoved, pid);
+            }
+
             long dur = System.currentTimeMillis() - start;
             logger.info("Checklists sync complete for project {}: {} total records across {} pages", pid, totalSynced, page);
             finishLog(log, "SUCCESS", totalSynced, dur, null);
@@ -125,20 +143,25 @@ public class ChecklistService extends BaseProjectService {
         }
     }
 
-    @Cacheable(value = "checklists-all")
+    @Cacheable(value = "checklists-all", key = "@providerContextService.currentProviderKey()")
     @Transactional(readOnly = true)
     public List<Checklist> getAll() {
-        return rehydrateStatusDates(rehydrateTagLevels(checklistRepository.findAll()));
+        return deduplicateCurrentProviderRows(rehydrateStatusDates(rehydrateTagLevels(checklistRepository.findAll().stream()
+                .filter(checklist -> providerContextService.matchesCurrentProvider(checklist.getProvider()))
+                .toList())));
     }
 
     @Cacheable(value = "entity-by-id", key = "\"checklists-\" + #id")
     @Transactional(readOnly = true)
     public Optional<Checklist> getById(Long id) { return checklistRepository.findById(id); }
 
-    @Cacheable(value = "checklists-by-project", key = "#projectId")
-    @Transactional(readOnly = true)
+    @Cacheable(value = "checklists-by-project", key = "#projectId + '::' + @providerContextService.currentProviderKey()")
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
     public List<Checklist> getByProject(String projectId) {
-        return rehydrateStatusDates(rehydrateTagLevels(checklistRepository.findByProjectId(projectId)));
+        ensureProviderChecklistsLoaded(projectId);
+        return deduplicateCurrentProviderRows(rehydrateStatusDates(rehydrateTagLevels(checklistRepository.findByProjectId(projectId).stream()
+                .filter(checklist -> providerContextService.matchesCurrentProvider(checklist.getProvider()))
+                .toList())));
     }
 
     /**
@@ -194,7 +217,7 @@ public class ChecklistService extends BaseProjectService {
         list.stream().map(Checklist::getProjectId).filter(pid -> pid != null && !pid.isBlank()).forEach(projectIds::add);
         java.util.Map<String, ChecklistStatusDate> statusDates = new java.util.HashMap<>();
         for (String projectId : projectIds) {
-            checklistStatusDateRepository.findByProjectId(projectId)
+            checklistStatusDateRepository.findByProjectIdAndProvider(projectId, currentProviderKey())
                     .forEach(row -> statusDates.put(projectId + "::" + row.getChecklistExternalId(), row));
         }
         list.forEach(checklist -> {
@@ -206,6 +229,90 @@ public class ChecklistService extends BaseProjectService {
             }
         });
         return list;
+    }
+
+    private List<Checklist> deduplicateCurrentProviderRows(List<Checklist> list) {
+        if (list.size() < 2) {
+            return list;
+        }
+        LinkedHashMap<String, Checklist> deduped = new LinkedHashMap<>();
+        list.forEach(checklist -> {
+            String key = checklistDedupKey(checklist);
+            Checklist existing = deduped.get(key);
+            if (existing == null || shouldReplaceChecklist(existing, checklist)) {
+                deduped.put(key, checklist);
+            }
+        });
+        return new ArrayList<>(deduped.values());
+    }
+
+    private int cleanupCurrentProviderDuplicates(String projectId) {
+        if (currentProvider() != DataProvider.CXALLOY || !StringUtils.hasText(projectId)) {
+            return 0;
+        }
+        List<Checklist> currentRows = checklistRepository.findByProjectId(projectId).stream()
+                .filter(checklist -> providerContextService.matchesCurrentProvider(checklist.getProvider()))
+                .toList();
+        if (currentRows.size() < 2) {
+            return 0;
+        }
+        LinkedHashMap<String, List<Checklist>> grouped = new LinkedHashMap<>();
+        currentRows.forEach(checklist ->
+                grouped.computeIfAbsent(checklistDedupKey(checklist), ignored -> new ArrayList<>()).add(checklist));
+
+        List<Checklist> toDelete = new ArrayList<>();
+        grouped.values().forEach(group -> {
+            if (group.size() < 2) {
+                return;
+            }
+            group.sort((left, right) -> shouldReplaceChecklist(left, right) ? 1 : -1);
+            toDelete.addAll(group.subList(0, group.size() - 1));
+        });
+
+        if (toDelete.isEmpty()) {
+            return 0;
+        }
+        checklistRepository.deleteAllInBatch(toDelete);
+        return toDelete.size();
+    }
+
+    private String checklistDedupKey(Checklist checklist) {
+        if (StringUtils.hasText(checklist.getExternalId())) {
+            return checklist.getExternalId().trim();
+        }
+        if (StringUtils.hasText(checklist.getSourceKey())) {
+            return checklist.getSourceKey().trim();
+        }
+        return String.valueOf(checklist.getId());
+    }
+
+    private boolean shouldReplaceChecklist(Checklist existing, Checklist candidate) {
+        int existingScore = checklistPreferenceScore(existing);
+        int candidateScore = checklistPreferenceScore(candidate);
+        if (candidateScore != existingScore) {
+            return candidateScore > existingScore;
+        }
+        if (existing.getSyncedAt() == null) {
+            return candidate.getSyncedAt() != null;
+        }
+        if (candidate.getSyncedAt() == null) {
+            return false;
+        }
+        return candidate.getSyncedAt().isAfter(existing.getSyncedAt());
+    }
+
+    private int checklistPreferenceScore(Checklist checklist) {
+        int score = 0;
+        if (currentProviderKey().equalsIgnoreCase(String.valueOf(checklist.getProvider()))) {
+            score += 4;
+        }
+        if (StringUtils.hasText(checklist.getSourceKey())) {
+            score += 2;
+        }
+        if (StringUtils.hasText(checklist.getRawJson())) {
+            score += 1;
+        }
+        return score;
     }
 
     /**
@@ -266,6 +373,8 @@ public class ChecklistService extends BaseProjectService {
         c.setExternalId(getAsText(n, "checklist_id",
                         getAsText(n, "id",
                         getAsText(n, "_id", null))));
+        c.setProvider(currentProviderKey());
+        c.setSourceKey(sourceKeyFor(c.getExternalId()));
         c.setProjectId(pid);
         c.setName(getAsText(n, "name", null));
         c.setDescription(getAsText(n, "description", null));
@@ -447,8 +556,10 @@ public class ChecklistService extends BaseProjectService {
 
     private void upsert(Checklist c) {
         if (c.getExternalId() != null) {
-            checklistRepository.findByExternalId(c.getExternalId()).ifPresentOrElse(existing -> {
+            findExistingChecklist(c).ifPresentOrElse(existing -> {
                 existing.setName(c.getName());
+                existing.setProvider(c.getProvider());
+                existing.setSourceKey(c.getSourceKey());
                 existing.setStatus(c.getStatus());
                 existing.setAssignedTo(c.getAssignedTo());
                 existing.setUpdatedAt(c.getUpdatedAt());
@@ -470,6 +581,59 @@ public class ChecklistService extends BaseProjectService {
             }, () -> checklistRepository.save(c));
         } else {
             checklistRepository.save(c);
+        }
+    }
+
+    private Optional<Checklist> findExistingChecklist(Checklist checklist) {
+        if (StringUtils.hasText(checklist.getSourceKey())) {
+            Optional<Checklist> bySourceKey = checklistRepository.findBySourceKey(checklist.getSourceKey());
+            if (bySourceKey.isPresent()) {
+                return bySourceKey;
+            }
+        }
+        Optional<Checklist> byCurrentProvider = checklistRepository.findByExternalIdAndProvider(
+                checklist.getExternalId(),
+                currentProviderKey());
+        if (byCurrentProvider.isPresent()) {
+            return byCurrentProvider;
+        }
+        if (currentProvider() == DataProvider.CXALLOY) {
+            return checklistRepository.findAllByExternalId(checklist.getExternalId()).stream()
+                    .filter(existing -> isLegacyCurrentProviderRecord(existing.getProvider()))
+                    .findFirst();
+        }
+        return Optional.empty();
+    }
+
+    private void ensureProviderChecklistsLoaded(String projectId) {
+        if (currentProvider() != DataProvider.FACILITY_GRID || !StringUtils.hasText(projectId)) {
+            return;
+        }
+        if (checklistRepository.countByProjectIdAndProviderIgnoreCase(projectId.trim(), currentProviderKey()) > 0) {
+            return;
+        }
+        try {
+            facilityGridChecklistService.syncAllChecklists(projectId);
+        } catch (Exception ex) {
+            logger.warn("Facility Grid checklist auto-sync failed for project {}: {}", projectId, ex.getMessage());
+        }
+    }
+
+    private void ensureProviderChecklistStatusDatesLoaded(String projectId) {
+        if (currentProvider() != DataProvider.FACILITY_GRID || !StringUtils.hasText(projectId)) {
+            return;
+        }
+        String pid = projectId.trim();
+        if (checklistRepository.countByProjectIdAndProviderIgnoreCase(pid, currentProviderKey()) == 0) {
+            return;
+        }
+        if (!checklistStatusDateRepository.findByProjectIdAndProvider(pid, currentProviderKey()).isEmpty()) {
+            return;
+        }
+        try {
+            checklistStatusDateService.syncProject(pid);
+        } catch (Exception ex) {
+            logger.warn("Facility Grid checklist status-date auto-sync failed for project {}: {}", pid, ex.getMessage());
         }
     }
 }

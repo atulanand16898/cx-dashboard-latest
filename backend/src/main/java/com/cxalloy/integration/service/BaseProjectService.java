@@ -2,6 +2,7 @@ package com.cxalloy.integration.service;
 
 import com.cxalloy.integration.config.CxAlloyApiProperties;
 import com.cxalloy.integration.model.ApiSyncLog;
+import com.cxalloy.integration.model.DataProvider;
 import com.cxalloy.integration.model.RawApiResponse;
 import com.cxalloy.integration.repository.ApiSyncLogRepository;
 import com.cxalloy.integration.repository.RawApiResponseRepository;
@@ -10,8 +11,11 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.util.StringUtils;
 
 import java.time.LocalDateTime;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 /**
  * Base class providing shared helpers for all project-scoped services.
@@ -25,6 +29,7 @@ public abstract class BaseProjectService {
     @Autowired protected ObjectMapper objectMapper;
     @Autowired protected ApiSyncLogRepository syncLogRepository;
     @Autowired protected RawApiResponseRepository rawApiResponseRepository;
+    @Autowired protected ProviderContextService providerContextService;
 
     /**
      * Resolves the project_id to use.
@@ -70,9 +75,13 @@ public abstract class BaseProjectService {
     }
 
     protected void saveRaw(String endpoint, String type, String externalId, String body) {
-        RawApiResponse raw = new RawApiResponse(endpoint, type, body);
-        raw.setExternalId(externalId);
-        rawApiResponseRepository.save(raw);
+        try {
+            RawApiResponse raw = new RawApiResponse(endpoint, type, body);
+            raw.setExternalId(externalId);
+            rawApiResponseRepository.save(raw);
+        } catch (Exception ex) {
+            logger.warn("Skipping raw response persistence for {} [{}]: {}", endpoint, externalId, ex.getMessage());
+        }
     }
 
     protected ApiSyncLog startLog(String endpoint, String method) {
@@ -84,8 +93,54 @@ public abstract class BaseProjectService {
         log.setRecordsSynced(count);
         log.setDurationMs(duration);
         log.setErrorMessage(error);
-        syncLogRepository.save(log);
+        try {
+            syncLogRepository.save(log);
+        } catch (Exception ex) {
+            logger.warn("Skipping sync log persistence for {}: {}", log.getEndpoint(), ex.getMessage());
+        }
     }
 
     protected LocalDateTime now() { return LocalDateTime.now(); }
+
+    protected DataProvider currentProvider() {
+        return providerContextService.currentProvider();
+    }
+
+    protected String currentProviderKey() {
+        return currentProvider().getKey();
+    }
+
+    protected String sourceKeyFor(String externalId) {
+        return currentProvider().sourceKeyFor(externalId);
+    }
+
+    protected boolean isLegacyCurrentProviderRecord(String provider) {
+        return providerContextService.matchesCurrentProvider(provider);
+    }
+
+    protected String jsonBodyWithProjectId(String projectId) {
+        return jsonBody(Map.of("project_id", projectId));
+    }
+
+    protected String jsonBodyWithProjectIdAndPage(String projectId, int page) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("project_id", projectId);
+        body.put("page", page);
+        return jsonBody(body);
+    }
+
+    protected String jsonBodyWithProjectIdAndIssueId(String projectId, String issueId) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("project_id", projectId);
+        body.put("issue_id", issueId);
+        return jsonBody(body);
+    }
+
+    private String jsonBody(Map<String, Object> body) {
+        try {
+            return objectMapper.writeValueAsString(body);
+        } catch (Exception ex) {
+            throw new IllegalStateException("Failed to build request body", ex);
+        }
+    }
 }

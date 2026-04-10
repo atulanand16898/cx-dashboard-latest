@@ -7,6 +7,9 @@ backend/.m2repo/
 !.env.production.example
 frontend.log
 frontend.err.log
+*.log
+*.err.log
+*.out.log
 backend/*.log
 backend/*.err.log
 backend/backend/
@@ -14,7 +17,12 @@ analysis/
 rfs03-checklists-raw.csv
 pdf-smoke.html
 pdf-smoke.pdf
+pdf-test.html
+report-smoke.pdf
+report-smoke-style.pdf
 sample-report-page1.png
+.claude/
+.pdf-profile/
 .DS_Store
 Thumbs.db
 .idea/

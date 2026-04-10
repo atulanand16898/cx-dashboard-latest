@@ -21,6 +21,9 @@ public class ChecklistStatusDate {
     @Column(name = "project_id", nullable = false)
     private String projectId;
 
+    @Column(name = "provider", length = 50)
+    private String provider = DataProvider.CXALLOY.getKey();
+
     @Column(name = "checklist_external_id", nullable = false)
     private String checklistExternalId;
 
@@ -68,6 +71,14 @@ public class ChecklistStatusDate {
 
     public void setProjectId(String projectId) {
         this.projectId = projectId;
+    }
+
+    public String getProvider() {
+        return provider;
+    }
+
+    public void setProvider(String provider) {
+        this.provider = provider;
     }
 
     public String getChecklistExternalId() {

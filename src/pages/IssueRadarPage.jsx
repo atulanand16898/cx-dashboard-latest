@@ -14,7 +14,7 @@
  */
 import React, { useState, useEffect, useMemo, useRef } from 'react'
 import { useProject } from '../context/ProjectContext'
-import { issuesApi } from '../services/api'
+import { copilotApi, issuesApi } from '../services/api'
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip } from 'recharts'
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -701,15 +701,13 @@ function CrossCompanyTab({ radar }) {
   )
 }
 
-// ─── AI Analysis Tab — OpenAI GPT-4o-mini ────────────────────────────────────
-const OPENAI_KEY = import.meta.env?.VITE_OPENAI_API_KEY || ''
+// ─── AI Analysis Tab — backend-managed OpenAI ────────────────────────────────
 
 function AICopilot({ radar, issues }) {
   const [messages, setMessages]   = useState([])
   const [input,    setInput]      = useState('')
   const [thinking, setThinking]   = useState(false)
-  const [apiKey,   setApiKey]     = useState(OPENAI_KEY)
-  const [showKey,  setShowKey]    = useState(!OPENAI_KEY)
+  const [copilotConfig, setCopilotConfig] = useState(null)
   const endRef = useRef(null)
 
   const QUICK = [
@@ -741,41 +739,45 @@ Be concise, actionable, and construction/commissioning focused. Keep answers und
     }])
   }, [radar.totalRows, radar.openCount])
 
+  useEffect(() => {
+    let cancelled = false
+    copilotApi.getConfig()
+      .then(({ data }) => {
+        if (!cancelled) {
+          setCopilotConfig(data.data || null)
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setCopilotConfig(null)
+        }
+      })
+    return () => { cancelled = true }
+  }, [])
+
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [messages])
 
   async function ask(q) {
     const text = (q || input).trim()
     if (!text) return
-    if (!apiKey) { alert('Please enter your OpenAI API key above to use AI Analysis.'); return }
+    if (!copilotConfig?.configured) { alert('OpenAI is not configured on the server yet.'); return }
     setInput('')
     setMessages(m => [...m, { role: 'user', text }])
     setThinking(true)
     try {
-      const resp = await fetch('https://api.openai.com/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${apiKey}`,
+      const resp = await copilotApi.chat({
+        payload: {
+          instructions: systemPrompt,
+          prompt: text,
+          includeProjectFiles: false,
+          conversation: messages,
         },
-        body: JSON.stringify({
-          model: 'gpt-4o-mini',
-          max_tokens: 500,
-          messages: [
-            { role: 'system', content: systemPrompt },
-            ...messages.filter(m => m.role !== 'assistant' || messages.indexOf(m) > 0).map(m => ({
-              role: m.role,
-              content: m.text,
-            })),
-            { role: 'user', content: text },
-          ],
-        }),
       })
-      const data = await resp.json()
-      if (data.error) throw new Error(data.error.message)
-      const reply = data.choices?.[0]?.message?.content || 'No response received.'
+      const reply = resp.data?.data?.answer || 'No response received.'
       setMessages(m => [...m, { role: 'assistant', text: reply }])
     } catch (err) {
-      setMessages(m => [...m, { role: 'assistant', text: `Error: ${err.message}. Check your API key and try again.` }])
+      const message = err.response?.data?.message || err.message || 'Request failed.'
+      setMessages(m => [...m, { role: 'assistant', text: `Error: ${message}` }])
     } finally {
       setThinking(false)
     }
@@ -799,32 +801,29 @@ Be concise, actionable, and construction/commissioning focused. Keep answers und
         ))}
       </div>
 
-      {/* API key input (shown if no env key) */}
-      {showKey && (
-        <div style={{ background: 'rgba(59,130,246,0.06)', border: '1px solid rgba(59,130,246,0.2)', borderRadius: 10, padding: '14px 18px', display: 'flex', gap: 10, alignItems: 'center' }}>
-          <span style={{ fontSize: 12, color: '#94a3b8', flexShrink: 0 }}>OpenAI API Key:</span>
-          <input
-            type="password"
-            value={apiKey}
-            onChange={e => setApiKey(e.target.value)}
-            placeholder="sk-..."
-            style={{ flex: 1, padding: '7px 12px', borderRadius: 7, background: 'var(--bg-card)', border: '1px solid var(--border)', color: 'var(--text-primary)', fontSize: 12, outline: 'none' }}
-          />
-          <button onClick={() => setShowKey(false)} style={{ padding: '7px 14px', borderRadius: 7, background: '#3b82f6', border: 'none', color: '#fff', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>Save</button>
-          <span style={{ fontSize: 10, color: '#475569', maxWidth: 180 }}>Or set VITE_OPENAI_API_KEY in .env — key stays in browser only</span>
+      <div style={{ background: copilotConfig?.configured ? 'rgba(34,197,94,0.08)' : 'rgba(248,113,113,0.08)', border: copilotConfig?.configured ? '1px solid rgba(34,197,94,0.2)' : '1px solid rgba(248,113,113,0.2)', borderRadius: 10, padding: '14px 18px', display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+          <div>
+            <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-primary)' }}>
+              {copilotConfig?.configured ? 'AI is configured on the backend' : 'AI backend configuration is missing'}
+            </div>
+            <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>
+              {copilotConfig?.configured
+                ? `Using ${copilotConfig.defaultModel || 'the configured model'} without exposing any browser-side API key.`
+                : 'Set OPENAI_API_KEY in the backend environment and restart the backend to enable AI analysis here.'}
+            </div>
+          </div>
+          <div style={{ padding: '6px 10px', borderRadius: 999, border: '1px solid var(--border)', background: 'var(--bg-base)', color: '#cbd5e1', fontSize: 11, fontWeight: 700 }}>
+            Model: {copilotConfig?.defaultModel || 'Unavailable'}
+          </div>
         </div>
-      )}
-
       {/* Chat window */}
       <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 12, overflow: 'hidden' }}>
         <div style={{ padding: '14px 18px', borderBottom: '1px solid var(--divider)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <div>
             <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--text-primary)' }}>AI Issue Copilot</div>
-            <div style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>Powered by GPT-4o-mini · Chat-style root cause and action analysis</div>
+            <div style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>Powered by backend OpenAI - Chat-style root cause and action analysis</div>
           </div>
-          <button onClick={() => setShowKey(v => !v)} style={{ fontSize: 11, color: '#475569', background: 'none', border: '1px solid var(--border)', borderRadius: 6, padding: '4px 10px', cursor: 'pointer' }}>
-            {showKey ? 'Hide key' : 'Change key'}
-          </button>
+          <div style={{ fontSize: 11, color: '#94a3b8' }}>{copilotConfig?.defaultModel || 'No model configured'}</div>
         </div>
 
         {/* Messages */}
@@ -869,8 +868,8 @@ Be concise, actionable, and construction/commissioning focused. Keep answers und
             disabled={thinking}
             style={{ flex: 1, padding: '9px 12px', borderRadius: 8, background: 'var(--bg-card)', border: '1px solid var(--border)', color: 'var(--text-primary)', fontSize: 12, outline: 'none' }}
           />
-          <button onClick={() => ask()} disabled={thinking || !input.trim() || !apiKey}
-            style={{ padding: '9px 18px', borderRadius: 8, background: '#3b82f6', border: 'none', color: '#fff', fontSize: 12, fontWeight: 700, cursor: 'pointer', opacity: (!input.trim() || !apiKey) ? 0.5 : 1 }}>
+          <button onClick={() => ask()} disabled={thinking || !input.trim() || !copilotConfig?.configured}
+            style={{ padding: '9px 18px', borderRadius: 8, background: '#3b82f6', border: 'none', color: '#fff', fontSize: 12, fontWeight: 700, cursor: 'pointer', opacity: (!input.trim() || !copilotConfig?.configured) ? 0.5 : 1 }}>
             Ask
           </button>
         </div>

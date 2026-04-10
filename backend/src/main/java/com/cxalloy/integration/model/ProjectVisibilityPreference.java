@@ -23,6 +23,9 @@ public class ProjectVisibilityPreference {
     @Column(name = "project_id", nullable = false, length = 50)
     private String projectId;
 
+    @Column(name = "provider", length = 50)
+    private String provider = DataProvider.CXALLOY.getKey();
+
     @Column(name = "created_at", nullable = false)
     private LocalDateTime createdAt;
 
@@ -55,6 +58,14 @@ public class ProjectVisibilityPreference {
 
     public void setProjectId(String projectId) {
         this.projectId = projectId;
+    }
+
+    public String getProvider() {
+        return provider;
+    }
+
+    public void setProvider(String provider) {
+        this.provider = provider;
     }
 
     public LocalDateTime getCreatedAt() {

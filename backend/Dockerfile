@@ -23,6 +23,8 @@ RUN apt-get update \
         fonts-dejavu-core \
         ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /tmp/project-files \
+    && chmod 1777 /tmp/project-files \
     && groupadd --system spring \
     && useradd --system --gid spring spring
 ENV BROWSER_BIN=/usr/bin/chromium

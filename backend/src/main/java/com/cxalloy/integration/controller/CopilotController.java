@@ -40,6 +40,14 @@ public class CopilotController {
         ));
     }
 
+    @GetMapping("/config")
+    public ResponseEntity<ApiResponse<Map<String, Object>>> config() {
+        return ResponseEntity.ok(ApiResponse.success(
+                copilotService.getCopilotConfig(),
+                "Copilot configuration"
+        ));
+    }
+
     @PostMapping("/chat")
     public ResponseEntity<ApiResponse<Map<String, Object>>> chat(
             @RequestPart("payload") String payload,

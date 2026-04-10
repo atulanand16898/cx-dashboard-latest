@@ -1,7 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { NavLink, useLocation, useNavigate } from 'react-router-dom'
 import {
-  Activity,
   BarChart3,
   Bot,
   Briefcase,
@@ -27,10 +26,12 @@ import {
   Wrench,
   X,
 } from 'lucide-react'
+import { PRIVATE_LOGIN_PATH } from '../../config/appRoutes'
 import toast from 'react-hot-toast'
 import { useAuth } from '../../context/AuthContext'
 import { useTheme } from '../../context/ThemeContext'
 import { useProject } from '../../context/ProjectContext'
+import ModumLogo from '../branding/ModumLogo'
 import {
   assetsApi,
   checklistsApi,
@@ -490,26 +491,12 @@ export default function Navbar() {
           borderBottom: '1px solid rgba(255,255,255,0.05)',
         }}
       >
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 240 }}>
-          <div
-            style={{
-              width: 40,
-              height: 40,
-              borderRadius: 12,
-              background: 'linear-gradient(135deg, #0ea5e9, #2563eb)',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              boxShadow: '0 10px 24px rgba(14,165,233,0.35)',
-              flexShrink: 0,
-            }}
-          >
-            <Activity size={18} color="white" />
-          </div>
-          <div>
-            <div style={{ fontSize: 14, fontWeight: 800, color: '#f8fafc', lineHeight: 1.15 }}>MODEM IQ</div>
-            <div style={{ fontSize: 10.5, color: '#6b7c99', lineHeight: 1.15 }}>Data-Driven Project Decisions</div>
-          </div>
+        <div style={{ display: 'flex', alignItems: 'center', minWidth: 260, maxWidth: 340 }}>
+          <ModumLogo
+            label="MODUM IQ"
+            sublabel="Data-Driven Delivery Decisions"
+            size="sm"
+          />
         </div>
 
         <nav style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1, minWidth: 0 }}>
@@ -868,7 +855,7 @@ export default function Navbar() {
             label="Sign out"
             onClick={async () => {
               await logout()
-              navigate('/login')
+              navigate(PRIVATE_LOGIN_PATH)
             }}
             accent="#fda4af"
           />

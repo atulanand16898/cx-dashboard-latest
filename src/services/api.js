@@ -1,11 +1,13 @@
 import axios from 'axios'
+import { PRIVATE_LOGIN_PATH } from '../config/appRoutes'
 
 const api = axios.create({
   baseURL: '/api',
   headers: { 'Content-Type': 'application/json' },
 })
 
-const isAuthRoute = (url = '') => url.includes('/auth/login') || url.includes('/auth/refresh')
+const isAuthRoute = (url = '') =>
+  url.includes('/auth/login') || url.includes('/auth/refresh') || url.includes('/auth/lead')
 
 // Attach JWT token to every request
 api.interceptors.request.use((config) => {
@@ -33,11 +35,11 @@ api.interceptors.response.use(
           return api(error.config)
         } catch {
           localStorage.clear()
-          window.location.href = '/login'
+          window.location.href = PRIVATE_LOGIN_PATH
         }
       } else {
         localStorage.clear()
-        window.location.href = '/login'
+        window.location.href = PRIVATE_LOGIN_PATH
       }
     }
     return Promise.reject(error)
@@ -47,6 +49,7 @@ api.interceptors.response.use(
 // Auth
 export const authApi = {
   login: (creds) => api.post('/auth/login', creds),
+  captureLead: (payload) => api.post('/auth/lead', payload),
   logout: (refreshToken) => api.post('/auth/logout', { refreshToken }),
   me: () => api.get('/auth/me'),
 }
@@ -118,13 +121,15 @@ export const checklistsApi = {
 
     const checklistData = checklistResponse?.data?.data || {}
     const statusDateData = statusDateResponse.data.data || {}
+    const checklistRecordsSynced = Number(checklistData.recordsSynced || 0)
+    const statusDateRecordsSynced = Number(statusDateData.recordsSynced || 0)
     const mergedData = {
       ...checklistData,
       status: 'SUCCESS',
-      recordsSynced: Number(checklistData.recordsSynced || 0) + Number(statusDateData.recordsSynced || 0),
+      recordsSynced: checklistRecordsSynced,
       message: [checklistData.message, statusDateData.message].filter(Boolean).join(' | '),
-      checklistRecordsSynced: Number(checklistData.recordsSynced || 0),
-      statusDateRecordsSynced: Number(statusDateData.recordsSynced || 0),
+      checklistRecordsSynced,
+      statusDateRecordsSynced,
       statusDatesSynced: true,
     }
 
@@ -195,6 +200,7 @@ export const equipmentApi = {
 
 // AI Copilot
 export const copilotApi = {
+  getConfig: () => api.get('/copilot/config'),
   getContext: (projectIds, query, includeProjectFiles = true) => api.get('/copilot/context', {
     params: {
       ...(projectIds?.length ? { projectIds } : {}),

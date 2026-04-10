@@ -6,8 +6,9 @@ import { ThemeProvider } from './context/ThemeContext'
 import { ProjectProvider } from './context/ProjectContext'
 import ProtectedRoute from './components/ProtectedRoute'
 import AppLayout from './components/layout/AppLayout'
+import ModemPortal from './ModemPortal'
+import ClientAccessPortalPage from './pages/ClientAccessPortalPage'
 import LoginPage from './pages/LoginPage'
-import DashboardPage from './pages/DashboardPage'
 import IssuesPage from './pages/IssuesPage'
 import SyncPage from './pages/SyncPage'
 import {
@@ -28,6 +29,7 @@ import AICopilotPage from './pages/AICopilotPage'
 import AssetReadinessPage from './pages/AssetReadinessPage'
 import ReportsPage from './pages/ReportsPage'
 import ProjectAccessPage from './pages/ProjectAccessPage'
+import { PRIVATE_LOGIN_PATH, providerLoginPath } from './config/appRoutes'
 
 export default function App() {
   return (
@@ -57,40 +59,41 @@ export default function App() {
           />
 
           <Routes>
-            <Route path="/login" element={<LoginPage />} />
+            <Route path="/" element={<ModemPortal />} />
+            <Route path="/login" element={<Navigate to={PRIVATE_LOGIN_PATH} replace />} />
+            <Route path={PRIVATE_LOGIN_PATH} element={<ClientAccessPortalPage />} />
+            <Route path={providerLoginPath(':providerKey')} element={<LoginPage />} />
             <Route
-              path="/"
               element={
                 <ProtectedRoute>
                   <AppLayout />
                 </ProtectedRoute>
               }
             >
-              <Route index element={<Navigate to="/tracker-pulse" replace />} />
-              <Route path="dashboard" element={<Navigate to="/tracker-pulse" replace />} />
-              <Route path="issues" element={<IssuesPage />} />
-              <Route path="tasks" element={<TasksPage />} />
-              <Route path="checklists" element={<ChecklistsPage />} />
-              <Route path="equipment" element={<EquipmentPage />} />
-              <Route path="files" element={<ProjectFilesPage />} />
-              <Route path="assets" element={<AssetsPage />} />
-              <Route path="persons" element={<PersonsPage />} />
-              <Route path="companies" element={<CompaniesPage />} />
-              <Route path="roles" element={<RolesPage />} />
-              <Route path="sync" element={<SyncPage />} />
-              <Route path="file-storage" element={<FileStoragePage />} />
-              <Route path="planned-vs-actual" element={<PlannedVsActualPage />} />
-              <Route path="tracker-pulse" element={<TrackerPulsePage />} />
-              <Route path="checklist-flow" element={<Navigate to="/asset-readiness" replace />} />
-              <Route path="issue-radar" element={<IssueRadarPage />} />
-              <Route path="ai-copilot" element={<AICopilotPage />} />
-              <Route path="asset-readiness" element={<AssetReadinessPage />} />
-              <Route path="reports" element={<ReportsPage />} />
-              <Route path="tracker-briefs" element={<ReportsPage />} />
-              <Route path="project-access" element={<ProjectAccessPage />} />
+              <Route path="/dashboard" element={<Navigate to="/tracker-pulse" replace />} />
+              <Route path="/issues" element={<IssuesPage />} />
+              <Route path="/tasks" element={<TasksPage />} />
+              <Route path="/checklists" element={<ChecklistsPage />} />
+              <Route path="/equipment" element={<EquipmentPage />} />
+              <Route path="/files" element={<ProjectFilesPage />} />
+              <Route path="/assets" element={<AssetsPage />} />
+              <Route path="/persons" element={<PersonsPage />} />
+              <Route path="/companies" element={<CompaniesPage />} />
+              <Route path="/roles" element={<RolesPage />} />
+              <Route path="/sync" element={<SyncPage />} />
+              <Route path="/file-storage" element={<FileStoragePage />} />
+              <Route path="/planned-vs-actual" element={<PlannedVsActualPage />} />
+              <Route path="/tracker-pulse" element={<TrackerPulsePage />} />
+              <Route path="/checklist-flow" element={<Navigate to="/asset-readiness" replace />} />
+              <Route path="/issue-radar" element={<IssueRadarPage />} />
+              <Route path="/ai-copilot" element={<AICopilotPage />} />
+              <Route path="/asset-readiness" element={<AssetReadinessPage />} />
+              <Route path="/reports" element={<ReportsPage />} />
+              <Route path="/tracker-briefs" element={<ReportsPage />} />
+              <Route path="/project-access" element={<ProjectAccessPage />} />
             </Route>
 
-            <Route path="*" element={<Navigate to="/tracker-pulse" replace />} />
+            <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </ProjectProvider>
       </AuthProvider>

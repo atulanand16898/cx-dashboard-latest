@@ -2,9 +2,6 @@ import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { useProject } from '../context/ProjectContext'
 import { copilotApi } from '../services/api'
 
-const DEFAULT_MODEL = 'gpt-4o-mini'
-const API_KEY_STORAGE = 'modem_iq_openai_api_key'
-const MODEL_STORAGE = 'modem_iq_openai_model'
 const PROJECT_FILES_STORAGE = 'modem_iq_include_project_files'
 
 const QUICK_PROMPTS = [
@@ -54,11 +51,11 @@ export default function AICopilotPage() {
   const [scopeMode, setScopeMode] = useState('workspace')
   const [context, setContext] = useState(null)
   const [contextLoading, setContextLoading] = useState(false)
+  const [copilotConfig, setCopilotConfig] = useState(null)
+  const [configLoading, setConfigLoading] = useState(true)
   const [messages, setMessages] = useState([])
   const [prompt, setPrompt] = useState('')
   const [thinking, setThinking] = useState(false)
-  const [apiKey, setApiKey] = useState(() => localStorage.getItem(API_KEY_STORAGE) || '')
-  const [model, setModel] = useState(() => localStorage.getItem(MODEL_STORAGE) || DEFAULT_MODEL)
   const [includeProjectFiles, setIncludeProjectFiles] = useState(() => localStorage.getItem(PROJECT_FILES_STORAGE) !== 'false')
   const [files, setFiles] = useState([])
   const [error, setError] = useState('')
@@ -76,16 +73,33 @@ export default function AICopilotPage() {
       : 'No project selected'
 
   useEffect(() => {
-    localStorage.setItem(API_KEY_STORAGE, apiKey)
-  }, [apiKey])
-
-  useEffect(() => {
-    localStorage.setItem(MODEL_STORAGE, model)
-  }, [model])
-
-  useEffect(() => {
     localStorage.setItem(PROJECT_FILES_STORAGE, includeProjectFiles ? 'true' : 'false')
   }, [includeProjectFiles])
+
+  useEffect(() => {
+    localStorage.removeItem('modem_iq_openai_api_key')
+    localStorage.removeItem('modem_iq_openai_model')
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    setConfigLoading(true)
+    copilotApi.getConfig()
+      .then(({ data }) => {
+        if (!cancelled) {
+          setCopilotConfig(data.data || null)
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setError(err.response?.data?.message || err.message || 'Failed to load copilot configuration.')
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setConfigLoading(false)
+      })
+    return () => { cancelled = true }
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -153,8 +167,8 @@ export default function AICopilotPage() {
   async function ask(question) {
     const text = (question || prompt).trim()
     if (!text || thinking) return
-    if (!apiKey.trim()) {
-      setError('Add your OpenAI API key to use the copilot.')
+    if (!copilotConfig?.configured) {
+      setError('OpenAI is not configured on the server. Add OPENAI_API_KEY in the backend env and restart the backend.')
       return
     }
 
@@ -169,8 +183,6 @@ export default function AICopilotPage() {
     try {
       const response = await copilotApi.chat({
         payload: {
-          apiKey: apiKey.trim(),
-          model: model.trim() || DEFAULT_MODEL,
           prompt: text,
           projectIds,
           includeProjectFiles,
@@ -285,20 +297,32 @@ export default function AICopilotPage() {
             </button>
           </div>
 
-          <div style={{ padding: '14px 18px', borderBottom: '1px solid var(--divider)', display: 'grid', gridTemplateColumns: '1.4fr 1fr', gap: 10 }}>
-            <input
-              type="password"
-              value={apiKey}
-              onChange={e => setApiKey(e.target.value)}
-              placeholder="OpenAI API key (stored in this browser only)"
-              style={{ padding: '10px 12px', borderRadius: 9, border: '1px solid var(--border)', background: 'var(--bg-base)', color: 'var(--text-primary)', fontSize: 12, outline: 'none' }}
-            />
-            <input
-              value={model}
-              onChange={e => setModel(e.target.value)}
-              placeholder="Model"
-              style={{ padding: '10px 12px', borderRadius: 9, border: '1px solid var(--border)', background: 'var(--bg-base)', color: 'var(--text-primary)', fontSize: 12, outline: 'none' }}
-            />
+          <div style={{ padding: '14px 18px', borderBottom: '1px solid var(--divider)' }}>
+            <div style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              gap: 12,
+              flexWrap: 'wrap',
+              alignItems: 'center',
+              padding: '12px 14px',
+              borderRadius: 12,
+              border: copilotConfig?.configured ? '1px solid rgba(34,197,94,0.22)' : '1px solid rgba(248,113,113,0.22)',
+              background: copilotConfig?.configured ? 'rgba(34,197,94,0.08)' : 'rgba(248,113,113,0.08)',
+            }}>
+              <div>
+                <div style={{ fontSize: 12, fontWeight: 800, color: 'var(--text-primary)' }}>
+                  {configLoading ? 'Checking AI configuration...' : copilotConfig?.configured ? 'OpenAI configured on the backend' : 'OpenAI backend configuration missing'}
+                </div>
+                <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>
+                  {copilotConfig?.configured
+                    ? `Using ${copilotConfig?.defaultModel || 'the configured default model'} through the server. No browser API key is required.`
+                    : 'Set OPENAI_API_KEY in the backend env and restart the backend to enable copilot responses.'}
+                </div>
+              </div>
+              <div style={{ padding: '7px 10px', borderRadius: 999, border: '1px solid var(--border)', background: 'var(--bg-base)', fontSize: 11, fontWeight: 700, color: '#cbd5e1' }}>
+                Model: {copilotConfig?.defaultModel || 'Unavailable'}
+              </div>
+            </div>
           </div>
 
           <div style={{ height: 360, overflowY: 'auto', padding: '16px 18px', display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -369,7 +393,7 @@ export default function AICopilotPage() {
               </div>
               <button
                 onClick={() => ask()}
-                disabled={thinking || !prompt.trim() || !apiKey.trim()}
+                disabled={thinking || !prompt.trim() || !copilotConfig?.configured}
                 style={{
                   padding: '10px 18px',
                   borderRadius: 10,
@@ -379,7 +403,7 @@ export default function AICopilotPage() {
                   fontSize: 12,
                   fontWeight: 700,
                   cursor: 'pointer',
-                  opacity: thinking || !prompt.trim() || !apiKey.trim() ? 0.5 : 1,
+                  opacity: thinking || !prompt.trim() || !copilotConfig?.configured ? 0.5 : 1,
                 }}
               >
                 Ask Copilot

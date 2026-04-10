@@ -41,10 +41,16 @@ services:
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS}
       CXALLOY_API_IDENTIFIER: ${CXALLOY_API_IDENTIFIER}
       CXALLOY_API_SECRET: ${CXALLOY_API_SECRET}
+      FACILITYGRID_API_CLIENT_ID: ${FACILITYGRID_API_CLIENT_ID:-}
+      FACILITYGRID_API_CLIENT_SECRET: ${FACILITYGRID_API_CLIENT_SECRET:-}
       JWT_SECRET: ${JWT_SECRET}
       OPENAI_API_KEY: ${OPENAI_API_KEY}
+      OPENAI_DEFAULT_MODEL: ${OPENAI_DEFAULT_MODEL:-gpt-5.4}
+      APP_FILES_STORAGE_DIR: ${APP_FILES_STORAGE_DIR:-/tmp/project-files}
       APP_LOG_LEVEL: ${APP_LOG_LEVEL:-INFO}
       JAVA_TOOL_OPTIONS: ${JAVA_TOOL_OPTIONS:--XX:MaxRAM=384m -XX:InitialRAMPercentage=20 -XX:+UseSerialGC}
+    volumes:
+      - project_files_data:/tmp/project-files
     expose:
       - "8081"
     logging:
@@ -68,3 +74,4 @@ services:
 
 volumes:
   postgres_data:
+  project_files_data:

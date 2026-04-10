@@ -21,6 +21,7 @@ import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 
+import java.util.Arrays;
 import java.util.List;
 
 @Configuration
@@ -38,7 +39,7 @@ public class SecurityConfig {
      * Allowed CORS origins. Defaults to Vite dev server.
      * Override in production via env var: CORS_ALLOWED_ORIGINS=https://yourapp.com
      */
-    @Value("${cors.allowed-origins:http://localhost:5173,http://localhost:3000}")
+    @Value("${cors.allowed-origins:http://localhost:5173,http://127.0.0.1:5173,http://localhost:5174,http://127.0.0.1:5174,http://localhost:3000,http://127.0.0.1:3000}")
     private String allowedOriginsRaw;
 
     public SecurityConfig(JwtAuthenticationFilter jwtAuthFilter,
@@ -65,8 +66,11 @@ public class SecurityConfig {
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration config = new CorsConfiguration();
 
-        // Parse comma-separated allowed origins
-        List<String> origins = List.of(allowedOriginsRaw.split(","));
+        // Parse comma-separated allowed origins and tolerate whitespace in env overrides.
+        List<String> origins = Arrays.stream(allowedOriginsRaw.split(","))
+                .map(String::trim)
+                .filter(origin -> !origin.isEmpty())
+                .toList();
         config.setAllowedOrigins(origins);
 
         // Allow all standard HTTP methods (including OPTIONS for preflight)

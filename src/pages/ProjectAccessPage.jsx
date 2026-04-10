@@ -210,7 +210,7 @@ export default function ProjectAccessPage() {
       <div>
         <h2 style={{ fontSize: 22, fontWeight: 800, color: 'var(--text-primary)', margin: 0 }}>Project Access</h2>
         <p style={{ fontSize: 13, color: '#64748b', marginTop: 4 }}>
-          Assign synced people to projects. `admin / admin123` can also be limited to a saved subset of visible projects, while email users only see projects explicitly assigned to their email.
+          Assign synced people to projects. The active provider admin account can also be limited to a saved subset of visible projects, while email users only see projects explicitly assigned to their email.
         </p>
       </div>
 

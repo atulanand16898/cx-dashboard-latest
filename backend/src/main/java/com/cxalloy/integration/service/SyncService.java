@@ -153,7 +153,11 @@ public class SyncService {
      * Blocking single-project sync. Used by POST /api/sync/project/{id}.
      */
     public Map<String, Object> syncProject(String projectId) {
-        return syncProjectInternal(projectId, projectId, null);
+        String projectName = projectService.getByExternalId(projectId)
+                .map(Project::getName)
+                .filter(name -> name != null && !name.isBlank())
+                .orElse(projectId);
+        return syncProjectInternal(projectId, projectName, null);
     }
 
     @Cacheable(value = "sync-stats")
@@ -269,7 +273,7 @@ public class SyncService {
             SyncResult checklistResult = checklistService.syncChecklists(pid);
             SyncResult statusDateResult = checklistStatusDateService.syncProject(pid);
             long duration = checklistResult.getDurationMs() + statusDateResult.getDurationMs();
-            int recordsSynced = checklistResult.getRecordsSynced() + statusDateResult.getRecordsSynced();
+            int recordsSynced = checklistResult.getRecordsSynced();
             String status = "SUCCESS".equalsIgnoreCase(checklistResult.getStatus())
                     && "SUCCESS".equalsIgnoreCase(statusDateResult.getStatus())
                     ? "SUCCESS"

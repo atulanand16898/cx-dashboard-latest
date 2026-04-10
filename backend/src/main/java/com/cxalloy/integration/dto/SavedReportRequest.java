@@ -2,6 +2,7 @@ package com.cxalloy.integration.dto;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 public class SavedReportRequest {
 
@@ -14,9 +15,12 @@ public class SavedReportRequest {
     private List<String> issueStatuses = new ArrayList<>();
     private List<String> checklistStatuses = new ArrayList<>();
     private List<String> equipmentTypes = new ArrayList<>();
+    private List<Map<String, Object>> sectionSettings = new ArrayList<>();
     private String summaryText;
     private String safetyNotes;
     private String commercialNotes;
+    private String customSectionText;
+    private String progressPhotosText;
     private String projectDescription;
     private String clientName;
     private String projectCode;
@@ -42,12 +46,18 @@ public class SavedReportRequest {
     public void setChecklistStatuses(List<String> checklistStatuses) { this.checklistStatuses = checklistStatuses == null ? new ArrayList<>() : checklistStatuses; }
     public List<String> getEquipmentTypes() { return equipmentTypes; }
     public void setEquipmentTypes(List<String> equipmentTypes) { this.equipmentTypes = equipmentTypes == null ? new ArrayList<>() : equipmentTypes; }
+    public List<Map<String, Object>> getSectionSettings() { return sectionSettings; }
+    public void setSectionSettings(List<Map<String, Object>> sectionSettings) { this.sectionSettings = sectionSettings == null ? new ArrayList<>() : sectionSettings; }
     public String getSummaryText() { return summaryText; }
     public void setSummaryText(String summaryText) { this.summaryText = summaryText; }
     public String getSafetyNotes() { return safetyNotes; }
     public void setSafetyNotes(String safetyNotes) { this.safetyNotes = safetyNotes; }
     public String getCommercialNotes() { return commercialNotes; }
     public void setCommercialNotes(String commercialNotes) { this.commercialNotes = commercialNotes; }
+    public String getCustomSectionText() { return customSectionText; }
+    public void setCustomSectionText(String customSectionText) { this.customSectionText = customSectionText; }
+    public String getProgressPhotosText() { return progressPhotosText; }
+    public void setProgressPhotosText(String progressPhotosText) { this.progressPhotosText = progressPhotosText; }
     public String getProjectDescription() { return projectDescription; }
     public void setProjectDescription(String projectDescription) { this.projectDescription = projectDescription; }
     public String getClientName() { return clientName; }

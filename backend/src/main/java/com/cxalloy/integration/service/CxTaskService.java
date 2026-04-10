@@ -4,10 +4,13 @@ import com.cxalloy.integration.client.CxAlloyApiClient;
 import com.cxalloy.integration.dto.SyncResult;
 import com.cxalloy.integration.model.ApiSyncLog;
 import com.cxalloy.integration.model.CxTask;
+import com.cxalloy.integration.model.DataProvider;
 import com.cxalloy.integration.repository.CxTaskRepository;
 import com.fasterxml.jackson.databind.JsonNode;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.util.StringUtils;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -22,10 +25,14 @@ public class CxTaskService extends BaseProjectService {
 
     private final CxTaskRepository taskRepository;
     private final CxAlloyApiClient apiClient;
+    private final FacilityGridTaskService facilityGridTaskService;
 
-    public CxTaskService(CxTaskRepository taskRepository, CxAlloyApiClient apiClient) {
+    public CxTaskService(CxTaskRepository taskRepository,
+                         CxAlloyApiClient apiClient,
+                         FacilityGridTaskService facilityGridTaskService) {
         this.taskRepository = taskRepository;
         this.apiClient = apiClient;
+        this.facilityGridTaskService = facilityGridTaskService;
     }
 
     @Caching(evict = {
@@ -33,6 +40,9 @@ public class CxTaskService extends BaseProjectService {
         @CacheEvict(value = "tasks-all", allEntries = true)
     })
     public SyncResult syncTasks(String projectId) {
+        if (currentProvider() == DataProvider.FACILITY_GRID) {
+            return facilityGridTaskService.syncTasks(projectId);
+        }
         long start = System.currentTimeMillis();
         String pid = resolveProjectId(projectId);
         ApiSyncLog log = startLog("/task", "GET");
@@ -61,19 +71,46 @@ public class CxTaskService extends BaseProjectService {
         }
     }
 
-    @Cacheable(value = "tasks-all")
+    @Cacheable(value = "tasks-all", key = "@providerContextService.currentProviderKey()")
     @Transactional(readOnly = true)
-    public List<CxTask> getAll() { return taskRepository.findAll(); }
+    public List<CxTask> getAll() {
+        return taskRepository.findAll().stream()
+                .filter(task -> providerContextService.matchesCurrentProvider(task.getProvider()))
+                .toList();
+    }
 
     @Cacheable(value = "entity-by-id", key = "\"tasks-\" + #id")
     @Transactional(readOnly = true)
     public Optional<CxTask> getById(Long id) { return taskRepository.findById(id); }
 
-    @Cacheable(value = "tasks-by-project", key = "#projectId")
-    @Transactional(readOnly = true)
-    public List<CxTask> getByProject(String projectId) { return taskRepository.findByProjectId(projectId); }
+    @Cacheable(value = "tasks-by-project", key = "#projectId + '::' + @providerContextService.currentProviderKey()")
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    public List<CxTask> getByProject(String projectId) {
+        ensureProviderTasksLoaded(projectId);
+        return taskRepository.findByProjectId(projectId).stream()
+                .filter(task -> providerContextService.matchesCurrentProvider(task.getProvider()))
+                .toList();
+    }
 
-    public List<CxTask> getByIssue(String issueId) { return taskRepository.findByIssueId(issueId); }
+    public List<CxTask> getByIssue(String issueId) {
+        return taskRepository.findByIssueId(issueId).stream()
+                .filter(task -> providerContextService.matchesCurrentProvider(task.getProvider()))
+                .toList();
+    }
+
+    private void ensureProviderTasksLoaded(String projectId) {
+        if (currentProvider() != DataProvider.FACILITY_GRID || !StringUtils.hasText(projectId)) {
+            return;
+        }
+        if (taskRepository.countByProjectIdAndProviderIgnoreCase(projectId.trim(), currentProviderKey()) > 0) {
+            return;
+        }
+        try {
+            facilityGridTaskService.syncTasks(projectId);
+        } catch (Exception ex) {
+            logger.warn("Facility Grid task auto-sync failed for project {}: {}", projectId, ex.getMessage());
+        }
+    }
 
     private int parseAndSave(String json, String pid) throws Exception {
         if (json == null || json.isBlank()) { logger.warn("Empty response for /task project={}", pid); return 0; }
@@ -90,6 +127,8 @@ public class CxTaskService extends BaseProjectService {
     private CxTask map(JsonNode n, String pid) {
         CxTask t = new CxTask();
         t.setExternalId(getAsText(n, "id", getAsText(n, "_id", null)));
+        t.setProvider(currentProviderKey());
+        t.setSourceKey(sourceKeyFor(t.getExternalId()));
         t.setProjectId(pid);
         t.setTitle(getAsText(n, "title", getAsText(n, "name", null)));
         t.setDescription(getAsText(n, "description", null));
@@ -108,12 +147,34 @@ public class CxTaskService extends BaseProjectService {
 
     private void upsert(CxTask t) {
         if (t.getExternalId() != null) {
-            taskRepository.findByExternalId(t.getExternalId()).ifPresentOrElse(existing -> {
+            findExistingTask(t).ifPresentOrElse(existing -> {
                 existing.setTitle(t.getTitle()); existing.setStatus(t.getStatus());
+                existing.setProvider(t.getProvider()); existing.setSourceKey(t.getSourceKey());
                 existing.setAssignedTo(t.getAssignedTo()); existing.setUpdatedAt(t.getUpdatedAt());
                 existing.setRawJson(t.getRawJson()); existing.setSyncedAt(now());
                 taskRepository.save(existing);
             }, () -> taskRepository.save(t));
         } else { taskRepository.save(t); }
+    }
+
+    private Optional<CxTask> findExistingTask(CxTask task) {
+        if (StringUtils.hasText(task.getSourceKey())) {
+            Optional<CxTask> bySourceKey = taskRepository.findBySourceKey(task.getSourceKey());
+            if (bySourceKey.isPresent()) {
+                return bySourceKey;
+            }
+        }
+        Optional<CxTask> byCurrentProvider = taskRepository.findByExternalIdAndProvider(
+                task.getExternalId(),
+                currentProviderKey());
+        if (byCurrentProvider.isPresent()) {
+            return byCurrentProvider;
+        }
+        if (currentProvider() == DataProvider.CXALLOY) {
+            return taskRepository.findAllByExternalId(task.getExternalId()).stream()
+                    .filter(existing -> isLegacyCurrentProviderRecord(existing.getProvider()))
+                    .findFirst();
+        }
+        return Optional.empty();
     }
 }

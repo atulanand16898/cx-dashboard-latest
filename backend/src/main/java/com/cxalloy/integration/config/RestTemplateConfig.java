@@ -7,6 +7,7 @@ import org.apache.hc.core5.util.Timeout;
 import org.apache.hc.client5.http.config.RequestConfig;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Primary;
 import org.springframework.http.client.HttpComponentsClientHttpRequestFactory;
 import org.springframework.web.client.RestTemplate;
 
@@ -25,14 +26,25 @@ public class RestTemplateConfig {
      * responseTimeout=30s : long enough for slow endpoints, short enough to not block forever
      */
     @Bean
+    @Primary
     public RestTemplate restTemplate() {
+        return buildRestTemplate(60);
+    }
+
+    @Bean(name = "facilityGridRestTemplate")
+    public RestTemplate facilityGridRestTemplate(FacilityGridApiProperties facilityGridApiProperties) {
+        return buildRestTemplate(facilityGridApiProperties.getRequestTimeoutSeconds());
+    }
+
+    private RestTemplate buildRestTemplate(int responseTimeoutSeconds) {
         PoolingHttpClientConnectionManager cm = new PoolingHttpClientConnectionManager();
         cm.setMaxTotal(100);
         cm.setDefaultMaxPerRoute(30);
 
         RequestConfig requestConfig = RequestConfig.custom()
                 .setConnectTimeout(Timeout.ofSeconds(10))
-                .setResponseTimeout(Timeout.ofSeconds(60))
+                .setConnectionRequestTimeout(Timeout.ofSeconds(10))
+                .setResponseTimeout(Timeout.ofSeconds(Math.max(5, responseTimeoutSeconds)))
                 .build();
 
         CloseableHttpClient httpClient = HttpClients.custom()

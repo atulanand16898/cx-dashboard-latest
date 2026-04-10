@@ -30,15 +30,24 @@ public class UserDetailsConfig {
 
     @Bean
     public UserDetailsService userDetailsService(PasswordEncoder passwordEncoder,
+                                                 AdminCredentialsProperties adminCredentialsProperties,
                                                  PersonRepository personRepository,
                                                  ProjectAccessService projectAccessService) {
         return username -> {
             String normalized = username == null ? "" : username.trim().toLowerCase();
 
-            if ("admin".equals(normalized)) {
+            if (normalized.equals(adminCredentialsProperties.getCxalloyUsername().trim().toLowerCase())) {
                 return User.builder()
-                        .username("admin")
-                        .password(passwordEncoder.encode("admin123"))
+                        .username(adminCredentialsProperties.getCxalloyUsername())
+                        .password(passwordEncoder.encode(adminCredentialsProperties.getCxalloyPassword()))
+                        .roles("ADMIN", "USER")
+                        .build();
+            }
+
+            if (normalized.equals(adminCredentialsProperties.getFacilitygridUsername().trim().toLowerCase())) {
+                return User.builder()
+                        .username(adminCredentialsProperties.getFacilitygridUsername())
+                        .password(passwordEncoder.encode(adminCredentialsProperties.getFacilitygridPassword()))
                         .roles("ADMIN", "USER")
                         .build();
             }

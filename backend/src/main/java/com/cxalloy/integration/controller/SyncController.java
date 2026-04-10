@@ -340,7 +340,7 @@ public class SyncController {
                 "Run POST /api/projects/sync first, then GET /api/projects to find valid IDs."));
         }
         Map<String, Object> result = syncService.syncProject(externalId);
-        String status = (String) result.get("overallStatus");
+        String status = (String) result.get("status");
         int code = "SUCCESS".equals(status) ? 200 : 207;
         return ResponseEntity.status(code).body(ApiResponse.success(result,
             "Project sync completed [externalId=" + externalId + "]: " + status));

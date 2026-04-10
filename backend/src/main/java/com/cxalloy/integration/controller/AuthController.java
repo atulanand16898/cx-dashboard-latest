@@ -1,10 +1,17 @@
 package com.cxalloy.integration.controller;
 
 import com.cxalloy.integration.dto.ApiResponse;
+import com.cxalloy.integration.dto.FacilityGridEndpointTestRequest;
+import com.cxalloy.integration.dto.FacilityGridTokenTestRequest;
+import com.cxalloy.integration.dto.LeadCaptureRequest;
 import com.cxalloy.integration.dto.LoginRequest;
 import com.cxalloy.integration.dto.RefreshTokenRequest;
 import com.cxalloy.integration.dto.TokenResponse;
+import com.cxalloy.integration.model.DataProvider;
+import com.cxalloy.integration.security.JwtTokenProvider;
 import com.cxalloy.integration.service.AuthService;
+import com.cxalloy.integration.service.FacilityGridAuthService;
+import com.cxalloy.integration.service.LeadCaptureService;
 import com.cxalloy.integration.service.ProjectAccessService;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
@@ -25,11 +32,21 @@ public class AuthController {
     private static final String BEARER_PREFIX = "Bearer ";
 
     private final AuthService authService;
+    private final FacilityGridAuthService facilityGridAuthService;
+    private final LeadCaptureService leadCaptureService;
     private final ProjectAccessService projectAccessService;
+    private final JwtTokenProvider jwtTokenProvider;
 
-    public AuthController(AuthService authService, ProjectAccessService projectAccessService) {
+    public AuthController(AuthService authService,
+                          FacilityGridAuthService facilityGridAuthService,
+                          LeadCaptureService leadCaptureService,
+                          ProjectAccessService projectAccessService,
+                          JwtTokenProvider jwtTokenProvider) {
         this.authService = authService;
+        this.facilityGridAuthService = facilityGridAuthService;
+        this.leadCaptureService = leadCaptureService;
         this.projectAccessService = projectAccessService;
+        this.jwtTokenProvider = jwtTokenProvider;
     }
 
     /**
@@ -39,16 +56,69 @@ public class AuthController {
      */
     @PostMapping("/login")
     public ResponseEntity<ApiResponse<TokenResponse>> login(@Valid @RequestBody LoginRequest request) {
-        logger.info("POST /api/auth/login - user: {}", request.getUsername());
+        logger.info("POST /api/auth/login - user: {} provider: {}", request.getUsername(), request.getProvider());
         try {
             TokenResponse tokens = authService.login(request);
             return ResponseEntity.ok(ApiResponse.success(tokens, "Login successful"));
         } catch (BadCredentialsException e) {
             logger.warn("Login failed for user '{}': {}", request.getUsername(), e.getMessage());
+            String message = e.getMessage();
+            if (message != null && message.startsWith("Use the ")) {
+                return ResponseEntity.status(401).body(ApiResponse.error(message));
+            }
             return ResponseEntity.status(401).body(ApiResponse.error("Invalid username or password"));
         } catch (Exception e) {
             logger.error("Login error: {}", e.getMessage());
             return ResponseEntity.status(500).body(ApiResponse.error("Login failed: " + e.getMessage()));
+        }
+    }
+
+    @PostMapping("/lead")
+    public ResponseEntity<ApiResponse<Map<String, Object>>> captureLead(
+            @Valid @RequestBody LeadCaptureRequest request,
+            HttpServletRequest servletRequest) {
+        logger.info("POST /api/auth/lead - email: {}", request.getEmail());
+        try {
+            Map<String, Object> result = leadCaptureService.captureLead(request, servletRequest);
+            boolean notificationSent = Boolean.TRUE.equals(result.get("notificationSent"));
+            String message = notificationSent
+                    ? "Lead captured successfully. Notification email sent."
+                    : "Lead captured successfully. Notification email is pending mail configuration.";
+            return ResponseEntity.ok(ApiResponse.success(result, message));
+        } catch (Exception e) {
+            logger.error("Lead capture error: {}", e.getMessage());
+            return ResponseEntity.status(500).body(ApiResponse.error("Lead capture failed: " + e.getMessage()));
+        }
+    }
+
+    @PostMapping("/facility-grid/test-token")
+    public ResponseEntity<ApiResponse<Map<String, Object>>> testFacilityGridToken(
+            @Valid @RequestBody FacilityGridTokenTestRequest request) {
+        try {
+            Map<String, Object> result = facilityGridAuthService.testClientCredentials(
+                    request.getClientId(),
+                    request.getClientSecret()
+            );
+            return ResponseEntity.ok(ApiResponse.success(result, "Facility Grid token request succeeded"));
+        } catch (Exception e) {
+            logger.error("Facility Grid token test failed: {}", e.getMessage());
+            return ResponseEntity.status(400).body(ApiResponse.error("Facility Grid token test failed: " + e.getMessage()));
+        }
+    }
+
+    @PostMapping("/facility-grid/test-endpoint")
+    public ResponseEntity<ApiResponse<Map<String, Object>>> testFacilityGridEndpoint(
+            @Valid @RequestBody FacilityGridEndpointTestRequest request) {
+        try {
+            Map<String, Object> result = facilityGridAuthService.testEndpoint(
+                    request.getClientId(),
+                    request.getClientSecret(),
+                    request.getPath()
+            );
+            return ResponseEntity.ok(ApiResponse.success(result, "Facility Grid endpoint request succeeded"));
+        } catch (Exception e) {
+            logger.error("Facility Grid endpoint test failed: {}", e.getMessage());
+            return ResponseEntity.status(400).body(ApiResponse.error("Facility Grid endpoint test failed: " + e.getMessage()));
         }
     }
 
@@ -108,11 +178,6 @@ public class AuthController {
             return ResponseEntity.status(401).body(ApiResponse.error("No token provided"));
         }
         try {
-            com.cxalloy.integration.security.JwtTokenProvider jwtProvider =
-                request.getServletContext().getAttribute("jwtProvider") != null
-                    ? (com.cxalloy.integration.security.JwtTokenProvider) request.getServletContext().getAttribute("jwtProvider")
-                    : null;
-
             // Get current user from security context
             org.springframework.security.core.Authentication auth =
                 org.springframework.security.core.context.SecurityContextHolder.getContext().getAuthentication();
@@ -121,8 +186,11 @@ public class AuthController {
                 return ResponseEntity.status(401).body(ApiResponse.error("Not authenticated"));
             }
 
+            DataProvider provider = jwtTokenProvider.extractProvider(accessToken);
             Map<String, Object> userInfo = Map.of(
                 "username", auth.getName(),
+                "provider", provider.getKey(),
+                "providerLabel", provider.getLabel(),
                 "roles", auth.getAuthorities().toString(),
                 "authenticated", true,
                 "isAdmin", projectAccessService.isAdmin(auth.getName()),

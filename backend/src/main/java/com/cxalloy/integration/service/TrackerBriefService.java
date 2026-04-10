@@ -19,13 +19,16 @@ public class TrackerBriefService {
     private final TrackerBriefRepository briefRepository;
     private final ChecklistRepository    checklistRepository;
     private final IssueRepository        issueRepository;
+    private final ProviderContextService providerContextService;
 
     public TrackerBriefService(TrackerBriefRepository briefRepository,
                                ChecklistRepository    checklistRepository,
-                               IssueRepository        issueRepository) {
+                               IssueRepository        issueRepository,
+                               ProviderContextService providerContextService) {
         this.briefRepository     = briefRepository;
         this.checklistRepository = checklistRepository;
         this.issueRepository     = issueRepository;
+        this.providerContextService = providerContextService;
     }
 
     // ── Read ──────────────────────────────────────────────────────────────────
@@ -33,14 +36,16 @@ public class TrackerBriefService {
     @Transactional(readOnly = true)
     public List<TrackerBrief> getBriefsForProject(String projectId, String period) {
         if (period != null && !period.isBlank() && !period.equalsIgnoreCase("Overall")) {
-            return briefRepository.findByProjectIdAndPeriodOrderByExportedAtDesc(projectId, period);
+            return briefRepository.findByProjectIdAndPeriodAndProviderOrderByExportedAtDesc(
+                    projectId, period, providerContextService.currentProviderKey());
         }
-        return briefRepository.findByProjectIdOrderByExportedAtDesc(projectId);
+        return briefRepository.findByProjectIdAndProviderOrderByExportedAtDesc(
+                projectId, providerContextService.currentProviderKey());
     }
 
     @Transactional(readOnly = true)
     public long countForProject(String projectId) {
-        return briefRepository.countByProjectId(projectId);
+        return briefRepository.countByProjectIdAndProvider(projectId, providerContextService.currentProviderKey());
     }
 
     // ── Manual create (called when user clicks Export CSV in frontend) ─────────
@@ -49,6 +54,7 @@ public class TrackerBriefService {
                                Integer items, Integer issues, String period) {
         TrackerBrief b = new TrackerBrief();
         b.setProjectId(projectId);
+        b.setProvider(providerContextService.currentProviderKey());
         b.setTitle(title);
         b.setSubtitle(subtitle);
         b.setItems(items != null ? items : 0);
@@ -66,7 +72,9 @@ public class TrackerBriefService {
 
     public TrackerBrief generateSnapshot(String projectId, String period) {
         // Count checklists
-        long totalChecklists = checklistRepository.countByProjectId(projectId);
+        long totalChecklists = checklistRepository.findByProjectId(projectId).stream()
+                .filter(checklist -> providerContextService.matchesCurrentProvider(checklist.getProvider()))
+                .count();
 
         // Count finished checklists — must cover all canonical closed tokens
         // including checklist_approved and complete (emitted by updated ChecklistService)
@@ -74,17 +82,23 @@ public class TrackerBriefService {
         for (String s : new String[]{
                 "checklist_approved", "complete", "finished", "completed",
                 "done", "closed", "signed_off", "approved"}) {
-            finishedChecklists += checklistRepository.countByProjectIdAndStatus(projectId, s);
+            finishedChecklists += checklistRepository.findByProjectIdAndStatus(projectId, s).stream()
+                    .filter(checklist -> providerContextService.matchesCurrentProvider(checklist.getProvider()))
+                    .count();
         }
 
         // Count issues
-        long totalIssues = issueRepository.countByProjectId(projectId);
+        long totalIssues = issueRepository.findByProjectId(projectId).stream()
+                .filter(issue -> providerContextService.matchesCurrentProvider(issue.getProvider()))
+                .count();
 
         // Count open issues
         long openIssues = 0;
         for (String s : new String[]{"open", "in_progress", "active", "correction_in_progress",
                 "gc_to_verify", "cxa_to_verify", "ready_for_retest", "additional_information_needed"}) {
-            openIssues += issueRepository.countByProjectIdAndStatus(projectId, s);
+            openIssues += issueRepository.findByProjectIdAndStatus(projectId, s).stream()
+                    .filter(issue -> providerContextService.matchesCurrentProvider(issue.getProvider()))
+                    .count();
         }
 
         // Build label
@@ -97,6 +111,7 @@ public class TrackerBriefService {
 
         TrackerBrief b = new TrackerBrief();
         b.setProjectId(projectId);
+        b.setProvider(providerContextService.currentProviderKey());
         b.setTitle(title);
         b.setSubtitle(subtitle);
         b.setItems((int) totalChecklists);

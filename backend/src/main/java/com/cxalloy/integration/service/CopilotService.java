@@ -33,6 +33,8 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
@@ -95,6 +97,7 @@ public class CopilotService {
             "have", "been", "were", "does", "your", "ours", "than", "then", "them",
             "open", "closed", "data", "the", "and", "for", "are", "but", "not", "you"
     );
+    private static final Logger log = LoggerFactory.getLogger(CopilotService.class);
 
     private final ProjectRepository projectRepository;
     private final IssueRepository issueRepository;
@@ -111,7 +114,10 @@ public class CopilotService {
     private final RestTemplate restTemplate;
     private final ObjectMapper objectMapper;
 
-    @Value("${copilot.default-model:gpt-4o-mini}")
+    @Value("${copilot.api-key:}")
+    private String configuredApiKey;
+
+    @Value("${copilot.default-model:gpt-5.4}")
     private String defaultModel;
 
     public CopilotService(ProjectRepository projectRepository,
@@ -148,12 +154,23 @@ public class CopilotService {
         return buildWorkspaceContext(requestedProjectIds, query, List.of(), includeProjectFiles);
     }
 
+    public Map<String, Object> getCopilotConfig() {
+        Map<String, Object> config = new LinkedHashMap<>();
+        config.put("configured", StringUtils.hasText(configuredApiKey));
+        config.put("defaultModel", defaultModel);
+        return config;
+    }
+
     public Map<String, Object> chat(CopilotChatRequest request, List<MultipartFile> files) {
-        if (!StringUtils.hasText(request.getApiKey())) {
-            throw new IllegalArgumentException("OpenAI API key is required");
-        }
         if (!StringUtils.hasText(request.getPrompt())) {
             throw new IllegalArgumentException("Prompt is required");
+        }
+
+        String resolvedApiKey = StringUtils.hasText(request.getApiKey())
+                ? request.getApiKey().trim()
+                : StringUtils.hasText(configuredApiKey) ? configuredApiKey.trim() : "";
+        if (!StringUtils.hasText(resolvedApiKey)) {
+            throw new IllegalArgumentException("OpenAI is not configured on the server");
         }
 
         List<Map<String, Object>> uploadedFiles = extractUploads(files);
@@ -178,14 +195,18 @@ public class CopilotService {
         input.add(messagePart("user", request.getPrompt().trim()));
 
         Map<String, Object> payload = new LinkedHashMap<>();
-        payload.put("model", StringUtils.hasText(request.getModel()) ? request.getModel().trim() : defaultModel);
-        payload.put("instructions", buildSystemPrompt(context));
+        String resolvedModel = StringUtils.hasText(request.getModel()) ? request.getModel().trim() : defaultModel;
+        String resolvedInstructions = StringUtils.hasText(request.getInstructions())
+                ? request.getInstructions().trim()
+                : buildSystemPrompt(context);
+        payload.put("model", resolvedModel);
+        payload.put("instructions", resolvedInstructions);
         payload.put("input", input);
         payload.put("max_output_tokens", 900);
 
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);
-        headers.setBearerAuth(request.getApiKey().trim());
+        headers.setBearerAuth(resolvedApiKey);
 
         ResponseEntity<String> response;
         try {
@@ -598,12 +619,18 @@ public class CopilotService {
 
     private String extractStoredFileText(ProjectManagedFile file) {
         if (file == null || !StringUtils.hasText(file.getStoragePath())) {
-            return "No stored file path available.";
+            return null;
         }
-        try (InputStream inputStream = Files.newInputStream(Path.of(file.getStoragePath()))) {
+        Path storedPath = Path.of(file.getStoragePath());
+        if (!Files.isReadable(storedPath) || Files.isDirectory(storedPath)) {
+            log.warn("Skipping unreadable project library file {} at {}", file.getId(), storedPath);
+            return null;
+        }
+        try (InputStream inputStream = Files.newInputStream(storedPath)) {
             return extractFileText(file.getOriginalName(), file.getContentType(), inputStream);
         } catch (IOException ex) {
-            return "Failed to read stored file: " + ex.getMessage();
+            log.warn("Skipping project library file {} because stored content could not be read", file.getId(), ex);
+            return null;
         }
     }
 
@@ -677,6 +704,13 @@ public class CopilotService {
         return text.length() > FILE_TEXT_LIMIT
                 ? text.substring(0, FILE_TEXT_LIMIT) + "\n...[truncated]"
                 : text;
+    }
+
+    private boolean hasIndexableProjectFileText(String extractedText) {
+        return StringUtils.hasText(extractedText)
+                && !"No extractable text content found.".equals(extractedText)
+                && !extractedText.startsWith("Failed to extract Office text:")
+                && !extractedText.startsWith("Binary file uploaded.");
     }
 
     private String buildSystemPrompt(Map<String, Object> context) {
@@ -1048,11 +1082,19 @@ public class CopilotService {
     }
 
     private List<Map<String, Object>> buildManagedFileContext(List<ProjectManagedFile> managedFiles) {
-        return managedFiles.stream()
+        List<Map<String, Object>> indexedFiles = new ArrayList<>();
+        managedFiles.stream()
                 .sorted(Comparator.comparing(ProjectManagedFile::getUpdatedAt, Comparator.nullsLast(Comparator.reverseOrder())))
-                .limit(CONTEXT_PREVIEW_LIMIT)
-                .map(file -> managedFilePreview(file, extractStoredFileText(file)))
-                .toList();
+                .forEach(file -> {
+                    if (indexedFiles.size() >= CONTEXT_PREVIEW_LIMIT) {
+                        return;
+                    }
+                    String extractedText = extractStoredFileText(file);
+                    if (hasIndexableProjectFileText(extractedText)) {
+                        indexedFiles.add(managedFilePreview(file, extractedText));
+                    }
+                });
+        return indexedFiles;
     }
 
     private Map<String, Object> withEntityType(String entityType, Map<String, Object> row) {

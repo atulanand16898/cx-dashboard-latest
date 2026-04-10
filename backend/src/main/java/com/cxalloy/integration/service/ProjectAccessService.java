@@ -1,7 +1,9 @@
 package com.cxalloy.integration.service;
 
+import com.cxalloy.integration.config.AdminCredentialsProperties;
 import com.cxalloy.integration.dto.ProjectAccessAssignmentRequest;
 import com.cxalloy.integration.dto.ProjectVisibilityRequest;
+import com.cxalloy.integration.model.DataProvider;
 import com.cxalloy.integration.model.Person;
 import com.cxalloy.integration.model.Project;
 import com.cxalloy.integration.model.ProjectAccessAssignment;
@@ -33,15 +35,18 @@ public class ProjectAccessService {
     private final ProjectVisibilityPreferenceRepository visibilityRepository;
     private final PersonRepository personRepository;
     private final ProjectRepository projectRepository;
+    private final AdminCredentialsProperties adminCredentialsProperties;
 
     public ProjectAccessService(ProjectAccessAssignmentRepository assignmentRepository,
                                 ProjectVisibilityPreferenceRepository visibilityRepository,
                                 PersonRepository personRepository,
-                                ProjectRepository projectRepository) {
+                                ProjectRepository projectRepository,
+                                AdminCredentialsProperties adminCredentialsProperties) {
         this.assignmentRepository = assignmentRepository;
         this.visibilityRepository = visibilityRepository;
         this.personRepository = personRepository;
         this.projectRepository = projectRepository;
+        this.adminCredentialsProperties = adminCredentialsProperties;
     }
 
     @Transactional(readOnly = true)
@@ -60,7 +65,20 @@ public class ProjectAccessService {
 
     @Transactional(readOnly = true)
     public boolean isAdmin(String username) {
-        return StringUtils.hasText(username) && "admin".equalsIgnoreCase(username.trim());
+        return StringUtils.hasText(username) && adminCredentialsProperties.isAdminUsername(username);
+    }
+
+    @Transactional(readOnly = true)
+    public String currentProviderKey() {
+        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+        if (authentication != null && authentication.getDetails() instanceof String provider && StringUtils.hasText(provider)) {
+            try {
+                return DataProvider.fromValue(provider).getKey();
+            } catch (IllegalArgumentException ignored) {
+                // Fall back to the legacy default.
+            }
+        }
+        return DataProvider.CXALLOY.getKey();
     }
 
     @Transactional(readOnly = true)
@@ -99,15 +117,18 @@ public class ProjectAccessService {
     public List<Map<String, Object>> getAssignments() {
         requireAdmin();
         Map<String, Project> projectMap = projectRepository.findAll().stream()
+                .filter(project -> currentProviderKey().equalsIgnoreCase(
+                        StringUtils.hasText(project.getProvider()) ? project.getProvider() : DataProvider.CXALLOY.getKey()))
                 .filter(project -> StringUtils.hasText(project.getExternalId()))
                 .collect(Collectors.toMap(Project::getExternalId, project -> project, (left, right) -> left, LinkedHashMap::new));
 
-        return assignmentRepository.findAllByOrderByProjectIdAscPersonNameAsc().stream()
+        return assignmentRepository.findAllForProviderOrderByProjectIdAscPersonNameAsc(currentProviderKey()).stream()
                 .map(assignment -> {
                     Project project = projectMap.get(assignment.getProjectId());
                     Map<String, Object> row = new LinkedHashMap<>();
                     row.put("id", assignment.getId());
                     row.put("projectId", assignment.getProjectId());
+                    row.put("provider", normalizedProvider(assignment.getProvider()));
                     row.put("projectName", project != null ? project.getName() : assignment.getProjectId());
                     row.put("personExternalId", assignment.getPersonExternalId());
                     row.put("personEmail", assignment.getPersonEmail());
@@ -125,7 +146,7 @@ public class ProjectAccessService {
         if (!StringUtils.hasText(request.getProjectId())) {
             throw new IllegalArgumentException("projectId is required");
         }
-        Project project = projectRepository.findByExternalId(request.getProjectId().trim())
+        Project project = projectRepository.findByExternalIdAndProvider(request.getProjectId().trim(), currentProviderKey())
                 .orElseThrow(() -> new IllegalArgumentException("Project not found: " + request.getProjectId()));
 
         Person person = resolvePerson(request);
@@ -136,12 +157,13 @@ public class ProjectAccessService {
             throw new IllegalArgumentException("Selected person must have an email");
         }
 
-        if (assignmentRepository.existsByProjectIdAndPersonEmailIgnoreCase(project.getExternalId(), email)) {
+        if (assignmentRepository.existsByProjectIdAndPersonEmailForProvider(project.getExternalId(), email, currentProviderKey())) {
             throw new IllegalStateException("This person is already assigned to the project");
         }
 
         ProjectAccessAssignment assignment = new ProjectAccessAssignment();
         assignment.setProjectId(project.getExternalId());
+        assignment.setProvider(currentProviderKey());
         assignment.setPersonExternalId(person != null ? person.getExternalId() : request.getPersonExternalId());
         assignment.setPersonEmail(email);
         assignment.setPersonName(resolvePersonName(person, request));
@@ -151,6 +173,7 @@ public class ProjectAccessService {
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("id", assignment.getId());
         response.put("projectId", assignment.getProjectId());
+        response.put("provider", normalizedProvider(assignment.getProvider()));
         response.put("projectName", project.getName());
         response.put("personExternalId", assignment.getPersonExternalId());
         response.put("personEmail", assignment.getPersonEmail());
@@ -162,7 +185,12 @@ public class ProjectAccessService {
 
     public void remove(Long id) {
         requireAdmin();
-        assignmentRepository.deleteById(id);
+        ProjectAccessAssignment assignment = assignmentRepository.findById(id)
+                .orElseThrow(() -> new IllegalArgumentException("Assignment not found: " + id));
+        if (!currentProviderKey().equalsIgnoreCase(normalizedProvider(assignment.getProvider()))) {
+            throw new IllegalArgumentException("Assignment does not belong to the current provider");
+        }
+        assignmentRepository.delete(assignment);
     }
 
     @Transactional(readOnly = true)
@@ -181,7 +209,7 @@ public class ProjectAccessService {
         if (isAdmin(username)) {
             return resolveAdminVisibleProjectIds(username.trim());
         }
-        return assignmentRepository.findByPersonEmailIgnoreCaseOrderByProjectIdAsc(username.trim()).stream()
+        return assignmentRepository.findByPersonEmailForProviderOrderByProjectIdAsc(username.trim(), currentProviderKey()).stream()
                 .map(ProjectAccessAssignment::getProjectId)
                 .filter(StringUtils::hasText)
                 .collect(Collectors.toCollection(LinkedHashSet::new));
@@ -190,7 +218,10 @@ public class ProjectAccessService {
     @Transactional(readOnly = true)
     public List<Project> getProjectCatalog() {
         requireAdmin();
-        return projectRepository.findAll();
+        return projectRepository.findAll().stream()
+                .filter(project -> currentProviderKey().equalsIgnoreCase(
+                        StringUtils.hasText(project.getProvider()) ? project.getProvider() : DataProvider.CXALLOY.getKey()))
+                .toList();
     }
 
     @Transactional(readOnly = true)
@@ -201,10 +232,11 @@ public class ProjectAccessService {
 
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("username", username);
+        response.put("provider", currentProviderKey());
         response.put("selectedProjectIds", selectedProjectIds);
         response.put("isFiltered", !selectedProjectIds.isEmpty());
         response.put("selectedCount", selectedProjectIds.size());
-        response.put("totalProjects", projectRepository.count());
+        response.put("totalProjects", allProjectIds().size());
         return response;
     }
 
@@ -222,12 +254,13 @@ public class ProjectAccessService {
             throw new IllegalArgumentException("Unknown project IDs: " + String.join(", ", invalidProjectIds));
         }
 
-        visibilityRepository.deleteByUsernameIgnoreCase(normalizedUsername);
+        visibilityRepository.deleteByUsernameAndProvider(normalizedUsername, currentProviderKey());
         visibilityRepository.flush();
         requestedIds.forEach(projectId -> {
             ProjectVisibilityPreference preference = new ProjectVisibilityPreference();
             preference.setUsername(normalizedUsername);
             preference.setProjectId(projectId);
+            preference.setProvider(currentProviderKey());
             preference.setCreatedAt(LocalDateTime.now());
             visibilityRepository.save(preference);
         });
@@ -272,7 +305,7 @@ public class ProjectAccessService {
         if (!StringUtils.hasText(username)) {
             return new LinkedHashSet<>();
         }
-        return visibilityRepository.findByUsernameIgnoreCaseOrderByProjectIdAsc(username.trim()).stream()
+        return visibilityRepository.findByUsernameForProviderOrderByProjectIdAsc(username.trim(), currentProviderKey()).stream()
                 .map(ProjectVisibilityPreference::getProjectId)
                 .filter(StringUtils::hasText)
                 .collect(Collectors.toCollection(LinkedHashSet::new));
@@ -280,6 +313,8 @@ public class ProjectAccessService {
 
     private LinkedHashSet<String> allProjectIds() {
         return projectRepository.findAll().stream()
+                .filter(project -> currentProviderKey().equalsIgnoreCase(
+                        StringUtils.hasText(project.getProvider()) ? project.getProvider() : DataProvider.CXALLOY.getKey()))
                 .map(Project::getExternalId)
                 .filter(StringUtils::hasText)
                 .collect(Collectors.toCollection(LinkedHashSet::new));
@@ -293,5 +328,9 @@ public class ProjectAccessService {
                 .filter(StringUtils::hasText)
                 .map(projectId -> projectId.trim())
                 .collect(Collectors.toCollection(LinkedHashSet::new));
+    }
+
+    private String normalizedProvider(String provider) {
+        return StringUtils.hasText(provider) ? provider.trim() : DataProvider.CXALLOY.getKey();
     }
 }

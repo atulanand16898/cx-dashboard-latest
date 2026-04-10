@@ -1,5 +1,6 @@
 package com.cxalloy.integration.dto;
 
+import com.cxalloy.integration.model.DataProvider;
 import jakarta.validation.constraints.NotBlank;
 
 public class LoginRequest {
@@ -9,10 +10,14 @@ public class LoginRequest {
 
     @NotBlank(message = "Password is required")
     private String password;
+    private String provider = DataProvider.CXALLOY.getKey();
 
     public String getUsername() { return username; }
     public void setUsername(String username) { this.username = username; }
 
     public String getPassword() { return password; }
     public void setPassword(String password) { this.password = password; }
+
+    public String getProvider() { return provider; }
+    public void setProvider(String provider) { this.provider = provider; }
 }

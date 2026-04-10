@@ -2,6 +2,7 @@ import React from 'react'
 import { Navigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import { Activity } from 'lucide-react'
+import { PRIVATE_LOGIN_PATH } from '../config/appRoutes'
 
 export default function ProtectedRoute({ children }) {
   const { isAuthenticated, loading } = useAuth()
@@ -19,5 +20,5 @@ export default function ProtectedRoute({ children }) {
     )
   }
 
-  return isAuthenticated ? children : <Navigate to="/login" replace />
+  return isAuthenticated ? children : <Navigate to={PRIVATE_LOGIN_PATH} replace />
 }

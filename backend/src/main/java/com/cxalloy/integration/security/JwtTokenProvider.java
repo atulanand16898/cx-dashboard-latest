@@ -1,5 +1,6 @@
 package com.cxalloy.integration.security;
 
+import com.cxalloy.integration.model.DataProvider;
 import io.jsonwebtoken.*;
 import io.jsonwebtoken.security.Keys;
 import org.slf4j.Logger;
@@ -39,16 +40,18 @@ public class JwtTokenProvider {
         }
     }
 
-    public String generateAccessToken(UserDetails userDetails) {
+    public String generateAccessToken(UserDetails userDetails, DataProvider provider) {
         Map<String, Object> claims = new HashMap<>();
         claims.put("type", "ACCESS");
         claims.put("roles", userDetails.getAuthorities().toString());
+        claims.put("provider", provider.getKey());
         return buildToken(claims, userDetails.getUsername(), accessTokenExpiration);
     }
 
-    public String generateRefreshToken(UserDetails userDetails) {
+    public String generateRefreshToken(UserDetails userDetails, DataProvider provider) {
         Map<String, Object> claims = new HashMap<>();
         claims.put("type", "REFRESH");
+        claims.put("provider", provider.getKey());
         return buildToken(claims, userDetails.getUsername(), refreshTokenExpiration);
     }
 
@@ -95,6 +98,11 @@ public class JwtTokenProvider {
 
     public Date extractExpiration(String token) {
         return extractClaim(token, Claims::getExpiration);
+    }
+
+    public DataProvider extractProvider(String token) {
+        String provider = extractClaim(token, claims -> claims.get("provider", String.class));
+        return DataProvider.fromValue(provider);
     }
 
     public <T> T extractClaim(String token, Function<Claims, T> claimsResolver) {

@@ -63,14 +63,19 @@ DB_PASSWORD=change-me
 CORS_ALLOWED_ORIGINS=http://YOUR_GCE_EXTERNAL_IP
 CXALLOY_API_IDENTIFIER=replace-me
 CXALLOY_API_SECRET=replace-me
+FACILITYGRID_API_CLIENT_ID=
+FACILITYGRID_API_CLIENT_SECRET=
 JWT_SECRET=replace-me-with-a-long-random-secret
 OPENAI_API_KEY=
+OPENAI_DEFAULT_MODEL=gpt-5.4
+APP_FILES_STORAGE_DIR=/tmp/project-files
 APP_LOG_LEVEL=INFO
 DB_POOL_MAX_SIZE=6
 JAVA_TOOL_OPTIONS=-XX:MaxRAM=384m -XX:InitialRAMPercentage=20 -XX:+UseSerialGC
 ```
 
 If you later attach a domain, replace `CORS_ALLOWED_ORIGINS` with your real site URL.
+The `project_files_data` Docker volume keeps Files-tab uploads and AI file-library context across container rebuilds.
 
 ## 5. Deploy
 

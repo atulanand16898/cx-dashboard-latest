@@ -3,6 +3,7 @@ package com.cxalloy.integration.service;
 import com.cxalloy.integration.client.CxAlloyApiClient;
 import com.cxalloy.integration.dto.SyncResult;
 import com.cxalloy.integration.model.ApiSyncLog;
+import com.cxalloy.integration.model.DataProvider;
 import com.cxalloy.integration.model.Equipment;
 import com.cxalloy.integration.repository.EquipmentRepository;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -10,7 +11,9 @@ import org.springframework.cache.annotation.CacheEvict;
 import org.springframework.cache.annotation.Cacheable;
 import org.springframework.cache.annotation.Caching;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.util.StringUtils;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -43,10 +46,14 @@ public class EquipmentService extends BaseProjectService {
 
     private final EquipmentRepository equipmentRepository;
     private final CxAlloyApiClient apiClient;
+    private final FacilityGridEquipmentService facilityGridEquipmentService;
 
-    public EquipmentService(EquipmentRepository equipmentRepository, CxAlloyApiClient apiClient) {
+    public EquipmentService(EquipmentRepository equipmentRepository,
+                            CxAlloyApiClient apiClient,
+                            FacilityGridEquipmentService facilityGridEquipmentService) {
         this.equipmentRepository = equipmentRepository;
         this.apiClient = apiClient;
+        this.facilityGridEquipmentService = facilityGridEquipmentService;
     }
 
     // ── Live fetch (no DB write) ──────────────────────────────────────────────
@@ -58,6 +65,9 @@ public class EquipmentService extends BaseProjectService {
      */
     @Transactional(readOnly = true)
     public List<Equipment> fetchLive(String projectId) {
+        if (currentProvider() == DataProvider.FACILITY_GRID) {
+            return facilityGridEquipmentService.fetchLive(projectId);
+        }
         String pid = resolveProjectId(projectId);
         List<Equipment> result = new ArrayList<>();
         int page = 1;
@@ -94,6 +104,9 @@ public class EquipmentService extends BaseProjectService {
         @CacheEvict(value = "equipment-all",         allEntries = true)
     })
     public SyncResult syncEquipment(String projectId) {
+        if (currentProvider() == DataProvider.FACILITY_GRID) {
+            return facilityGridEquipmentService.syncEquipment(projectId);
+        }
         long start = System.currentTimeMillis();
         String pid = resolveProjectId(projectId);
         ApiSyncLog log = startLog("/equipment", "GET");
@@ -241,24 +254,34 @@ public class EquipmentService extends BaseProjectService {
         }
     }
 
-    @Cacheable(value = "equipment-all")
+    @Cacheable(value = "equipment-all", key = "@providerContextService.currentProviderKey()")
     @Transactional(readOnly = true)
-    public List<Equipment> getAll() { return equipmentRepository.findAll(); }
+    public List<Equipment> getAll() {
+        return equipmentRepository.findAll().stream()
+                .filter(equipment -> providerContextService.matchesCurrentProvider(equipment.getProvider()))
+                .toList();
+    }
 
     @Cacheable(value = "entity-by-id", key = "'equipment-' + #id")
     @Transactional(readOnly = true)
     public Optional<Equipment> getById(Long id) { return equipmentRepository.findById(id); }
 
-    @Cacheable(value = "equipment-by-project", key = "#projectId")
-    @Transactional(readOnly = true)
+    @Cacheable(value = "equipment-by-project", key = "#projectId + '::' + @providerContextService.currentProviderKey()")
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
     public List<Equipment> getByProject(String projectId) {
-        return equipmentRepository.findByProjectId(projectId);
+        ensureProviderEquipmentLoaded(projectId);
+        return equipmentRepository.findByProjectId(projectId).stream()
+                .filter(equipment -> providerContextService.matchesCurrentProvider(equipment.getProvider()))
+                .toList();
     }
 
-    @Cacheable(value = "equipment-by-project", key = "#projectId + '-' + #equipmentType")
-    @Transactional(readOnly = true)
+    @Cacheable(value = "equipment-by-project", key = "#projectId + '-' + #equipmentType + '::' + @providerContextService.currentProviderKey()")
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
     public List<Equipment> getByProjectAndType(String projectId, String equipmentType) {
-        return equipmentRepository.findByProjectIdAndEquipmentType(projectId, equipmentType);
+        ensureProviderEquipmentLoaded(projectId);
+        return equipmentRepository.findByProjectIdAndEquipmentType(projectId, equipmentType).stream()
+                .filter(equipment -> providerContextService.matchesCurrentProvider(equipment.getProvider()))
+                .toList();
     }
 
     // ── Parsing ───────────────────────────────────────────────────────────────
@@ -304,6 +327,8 @@ public class EquipmentService extends BaseProjectService {
         // Primary ID — CxAlloy uses "equipment_id" as the canonical field
         e.setExternalId(getAsText(n, "equipment_id",
             getAsText(n, "id", getAsText(n, "_id", null))));
+        e.setProvider(currentProviderKey());
+        e.setSourceKey(sourceKeyFor(e.getExternalId()));
         e.setProjectId(pid);
         e.setName(getAsText(n, "name", null));
 
@@ -417,8 +442,10 @@ public class EquipmentService extends BaseProjectService {
 
     private void upsert(Equipment eq) {
         if (eq.getExternalId() != null) {
-            equipmentRepository.findByExternalId(eq.getExternalId()).ifPresentOrElse(existing -> {
+            findExistingEquipment(eq).ifPresentOrElse(existing -> {
                 existing.setName(eq.getName());
+                existing.setProvider(eq.getProvider());
+                existing.setSourceKey(eq.getSourceKey());
                 existing.setTag(eq.getTag());
                 existing.setStatus(eq.getStatus());
                 existing.setEquipmentType(eq.getEquipmentType());
@@ -439,6 +466,27 @@ public class EquipmentService extends BaseProjectService {
         } else {
             equipmentRepository.save(eq);
         }
+    }
+
+    private Optional<Equipment> findExistingEquipment(Equipment equipment) {
+        if (StringUtils.hasText(equipment.getSourceKey())) {
+            Optional<Equipment> bySourceKey = equipmentRepository.findBySourceKey(equipment.getSourceKey());
+            if (bySourceKey.isPresent()) {
+                return bySourceKey;
+            }
+        }
+        Optional<Equipment> byCurrentProvider = equipmentRepository.findByExternalIdAndProvider(
+                equipment.getExternalId(),
+                currentProviderKey());
+        if (byCurrentProvider.isPresent()) {
+            return byCurrentProvider;
+        }
+        if (currentProvider() == DataProvider.CXALLOY) {
+            return equipmentRepository.findAllByExternalId(equipment.getExternalId()).stream()
+                    .filter(existing -> isLegacyCurrentProviderRecord(existing.getProvider()))
+                    .findFirst();
+        }
+        return Optional.empty();
     }
 
     /**
@@ -465,6 +513,20 @@ public class EquipmentService extends BaseProjectService {
             case "6": return "Ready For Startup";
             case "7": return "In Service";
             default:  return idOrLabel; // already a string label — pass through
+        }
+    }
+
+    private void ensureProviderEquipmentLoaded(String projectId) {
+        if (currentProvider() != DataProvider.FACILITY_GRID || !StringUtils.hasText(projectId)) {
+            return;
+        }
+        if (equipmentRepository.countByProjectIdAndProviderIgnoreCase(projectId.trim(), currentProviderKey()) > 0) {
+            return;
+        }
+        try {
+            facilityGridEquipmentService.syncEquipment(projectId);
+        } catch (Exception ex) {
+            logger.warn("Facility Grid equipment auto-sync failed for project {}: {}", projectId, ex.getMessage());
         }
     }
 }

@@ -20,6 +20,9 @@ public class ProjectAccessAssignment {
     @Column(name = "project_id", nullable = false, length = 50)
     private String projectId;
 
+    @Column(name = "provider", length = 50)
+    private String provider = DataProvider.CXALLOY.getKey();
+
     @Column(name = "person_external_id", length = 100)
     private String personExternalId;
 
@@ -56,6 +59,14 @@ public class ProjectAccessAssignment {
 
     public void setProjectId(String projectId) {
         this.projectId = projectId;
+    }
+
+    public String getProvider() {
+        return provider;
+    }
+
+    public void setProvider(String provider) {
+        this.provider = provider;
     }
 
     public String getPersonExternalId() {

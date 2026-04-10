@@ -4,11 +4,14 @@ import com.cxalloy.integration.client.CxAlloyApiClient;
 import com.cxalloy.integration.dto.IssueRequest;
 import com.cxalloy.integration.dto.SyncResult;
 import com.cxalloy.integration.model.ApiSyncLog;
+import com.cxalloy.integration.model.DataProvider;
 import com.cxalloy.integration.model.Issue;
 import com.cxalloy.integration.repository.IssueRepository;
 import com.fasterxml.jackson.databind.JsonNode;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.util.StringUtils;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -37,10 +40,14 @@ public class IssueService extends BaseProjectService {
 
     private final IssueRepository issueRepository;
     private final CxAlloyApiClient apiClient;
+    private final FacilityGridIssueService facilityGridIssueService;
 
-    public IssueService(IssueRepository issueRepository, CxAlloyApiClient apiClient) {
+    public IssueService(IssueRepository issueRepository,
+                        CxAlloyApiClient apiClient,
+                        FacilityGridIssueService facilityGridIssueService) {
         this.issueRepository = issueRepository;
         this.apiClient = apiClient;
+        this.facilityGridIssueService = facilityGridIssueService;
     }
 
     @Caching(evict = {
@@ -48,6 +55,9 @@ public class IssueService extends BaseProjectService {
         @CacheEvict(value = "issues-all", allEntries = true)
     })
     public SyncResult syncAllIssues(String projectId) {
+        if (currentProvider() == DataProvider.FACILITY_GRID) {
+            return facilityGridIssueService.syncAllIssues(projectId);
+        }
         long start = System.currentTimeMillis();
         String pid = resolveProjectId(projectId);
         ApiSyncLog log = startLog("/issue", "POST");
@@ -58,7 +68,7 @@ public class IssueService extends BaseProjectService {
             while (true) {
                 String raw;
                 if (page == 1) {
-                    String body = "{\"project_id\":" + pid + "}";
+                    String body = jsonBodyWithProjectId(pid);
                     raw = apiClient.post("/issue", body);
                 } else {
                     raw = apiClient.get("/issue?project_id=" + pid + "&page=" + page);
@@ -90,12 +100,15 @@ public class IssueService extends BaseProjectService {
     }
 
     public SyncResult syncIssueById(String issueId, String projectId) {
+        if (currentProvider() == DataProvider.FACILITY_GRID) {
+            return facilityGridIssueService.syncIssueById(issueId, projectId);
+        }
         long start = System.currentTimeMillis();
         String pid = resolveProjectId(projectId);
         ApiSyncLog log = startLog("/issue", "POST");
         try {
             // Fetch single issue by filtering via POST /issue with issue_id
-            String body = "{\"project_id\":" + pid + ",\"issue_id\":" + issueId + "}";
+            String body = jsonBodyWithProjectIdAndIssueId(pid, issueId);
             String raw = apiClient.post("/issue", body);
             saveRaw("/issue", "issue_single", issueId, raw);
             Issue issue = parseOne(raw, pid);
@@ -156,10 +169,10 @@ public class IssueService extends BaseProjectService {
         String pid = resolveProjectId(projectId);
         ApiSyncLog log = startLog("/issue_delete", "POST");
         try {
-            String body = "{\"project_id\":" + pid + ",\"issue_id\":" + issueId + "}";
+            String body = jsonBodyWithProjectIdAndIssueId(pid, issueId);
             String raw = apiClient.post("/issue_delete", body);
             saveRaw("/issue_delete", "issue_deleted", issueId, raw);
-            issueRepository.findByExternalId(issueId).ifPresent(issueRepository::delete);
+            issueRepository.findByExternalIdAndProvider(issueId, currentProviderKey()).ifPresent(issueRepository::delete);
             long dur = System.currentTimeMillis() - start;
             finishLog(log, "SUCCESS", 1, dur, null);
             return new SyncResult("/issue_delete", "SUCCESS", 1, "Issue deleted", dur);
@@ -170,19 +183,42 @@ public class IssueService extends BaseProjectService {
         }
     }
 
-    @Cacheable(value = "issues-all")
+    @Cacheable(value = "issues-all", key = "@providerContextService.currentProviderKey()")
     @Transactional(readOnly = true)
-    public List<Issue> getAll() { return issueRepository.findAll(); }
+    public List<Issue> getAll() {
+        return issueRepository.findAll().stream()
+                .filter(issue -> providerContextService.matchesCurrentProvider(issue.getProvider()))
+                .toList();
+    }
 
     @Cacheable(value = "entity-by-id", key = "\"issue-\" + #id")
     @Transactional(readOnly = true)
     public Optional<Issue> getById(Long id) { return issueRepository.findById(id); }
 
-    public Optional<Issue> getByExternalId(String extId) { return issueRepository.findByExternalId(extId); }
+    public Optional<Issue> getByExternalId(String extId) { return issueRepository.findByExternalIdAndProvider(extId, currentProviderKey()); }
 
-    @Cacheable(value = "issues-by-project", key = "#projectId")
-    @Transactional(readOnly = true)
-    public List<Issue> getByProject(String projectId) { return issueRepository.findByProjectId(projectId); }
+    @Cacheable(value = "issues-by-project", key = "#projectId + '::' + @providerContextService.currentProviderKey()")
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    public List<Issue> getByProject(String projectId) {
+        ensureProviderIssuesLoaded(projectId);
+        return issueRepository.findByProjectId(projectId).stream()
+                .filter(issue -> providerContextService.matchesCurrentProvider(issue.getProvider()))
+                .toList();
+    }
+
+    private void ensureProviderIssuesLoaded(String projectId) {
+        if (currentProvider() != DataProvider.FACILITY_GRID || !StringUtils.hasText(projectId)) {
+            return;
+        }
+        if (issueRepository.countByProjectIdAndProviderIgnoreCase(projectId.trim(), currentProviderKey()) > 0) {
+            return;
+        }
+        try {
+            facilityGridIssueService.syncAllIssues(projectId);
+        } catch (Exception ex) {
+            logger.warn("Facility Grid issue auto-sync failed for project {}: {}", projectId, ex.getMessage());
+        }
+    }
 
     private int parseAndSave(String json, String pid) throws Exception {
         if (json == null || json.isBlank()) {
@@ -228,6 +264,8 @@ public class IssueService extends BaseProjectService {
     private Issue map(JsonNode n, String pid) {
         Issue i = new Issue();
         i.setExternalId(getAsText(n, "issue_id", getAsText(n, "id", getAsText(n, "_id", null))));
+        i.setProvider(currentProviderKey());
+        i.setSourceKey(sourceKeyFor(i.getExternalId()));
         i.setProjectId(pid != null ? pid : getAsText(n, "project_id", null));
         i.setTitle(getAsText(n, "title",
                    getAsText(n, "subject",
@@ -318,8 +356,9 @@ public class IssueService extends BaseProjectService {
 
     private void upsertIssue(Issue i) {
         if (i.getExternalId() != null) {
-            issueRepository.findByExternalId(i.getExternalId()).ifPresentOrElse(existing -> {
+            findExistingIssue(i).ifPresentOrElse(existing -> {
                 existing.setTitle(i.getTitle()); existing.setStatus(i.getStatus());
+                existing.setProvider(i.getProvider()); existing.setSourceKey(i.getSourceKey());
                 existing.setPriority(i.getPriority()); existing.setAssignee(i.getAssignee());
                 existing.setDueDate(i.getDueDate()); existing.setUpdatedAt(i.getUpdatedAt());
                 existing.setAssetId(i.getAssetId());
@@ -334,5 +373,26 @@ public class IssueService extends BaseProjectService {
                 issueRepository.save(existing);
             }, () -> issueRepository.save(i));
         } else { issueRepository.save(i); }
+    }
+
+    private Optional<Issue> findExistingIssue(Issue issue) {
+        if (StringUtils.hasText(issue.getSourceKey())) {
+            Optional<Issue> bySourceKey = issueRepository.findBySourceKey(issue.getSourceKey());
+            if (bySourceKey.isPresent()) {
+                return bySourceKey;
+            }
+        }
+        Optional<Issue> byCurrentProvider = issueRepository.findByExternalIdAndProvider(
+                issue.getExternalId(),
+                currentProviderKey());
+        if (byCurrentProvider.isPresent()) {
+            return byCurrentProvider;
+        }
+        if (currentProvider() == DataProvider.CXALLOY) {
+            return issueRepository.findAllByExternalId(issue.getExternalId()).stream()
+                    .filter(existing -> isLegacyCurrentProviderRecord(existing.getProvider()))
+                    .findFirst();
+        }
+        return Optional.empty();
     }
 }

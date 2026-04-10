@@ -1,8 +1,10 @@
 package com.cxalloy.integration.service;
 
+import com.cxalloy.integration.config.AdminCredentialsProperties;
 import com.cxalloy.integration.dto.LoginRequest;
 import com.cxalloy.integration.dto.RefreshTokenRequest;
 import com.cxalloy.integration.dto.TokenResponse;
+import com.cxalloy.integration.model.DataProvider;
 import com.cxalloy.integration.security.JwtTokenProvider;
 import com.cxalloy.integration.security.TokenBlacklistService;
 import org.slf4j.Logger;
@@ -28,24 +30,30 @@ public class AuthService {
     private final JwtTokenProvider jwtTokenProvider;
     private final UserDetailsService userDetailsService;
     private final TokenBlacklistService tokenBlacklistService;
+    private final AdminCredentialsProperties adminCredentialsProperties;
 
     public AuthService(AuthenticationManager authenticationManager,
                        JwtTokenProvider jwtTokenProvider,
                        UserDetailsService userDetailsService,
-                       TokenBlacklistService tokenBlacklistService) {
+                       TokenBlacklistService tokenBlacklistService,
+                       AdminCredentialsProperties adminCredentialsProperties) {
         this.authenticationManager = authenticationManager;
         this.jwtTokenProvider = jwtTokenProvider;
         this.userDetailsService = userDetailsService;
         this.tokenBlacklistService = tokenBlacklistService;
+        this.adminCredentialsProperties = adminCredentialsProperties;
     }
 
     /**
      * Authenticate user credentials and return JWT tokens
      */
     public TokenResponse login(LoginRequest request) {
+        DataProvider provider = resolveProvider(request.getProvider());
+
         String username = normalizeUsername(request.getUsername());
         String password = normalizePassword(request.getUsername(), request.getPassword());
-        logger.info("Login attempt for user: {}", username);
+        validateProviderSpecificAdmin(username, provider);
+        logger.info("Login attempt for user: {} via {}", username, provider.getKey());
 
         Authentication authentication = authenticationManager.authenticate(
             new UsernamePasswordAuthenticationToken(username, password)
@@ -54,11 +62,11 @@ public class AuthService {
         SecurityContextHolder.getContext().setAuthentication(authentication);
         UserDetails userDetails = (UserDetails) authentication.getPrincipal();
 
-        String accessToken = jwtTokenProvider.generateAccessToken(userDetails);
-        String refreshToken = jwtTokenProvider.generateRefreshToken(userDetails);
+        String accessToken = jwtTokenProvider.generateAccessToken(userDetails, provider);
+        String refreshToken = jwtTokenProvider.generateRefreshToken(userDetails, provider);
 
-        logger.info("Login successful for user: {}", userDetails.getUsername());
-        return buildTokenResponse(accessToken, refreshToken, userDetails.getUsername());
+        logger.info("Login successful for user: {} via {}", userDetails.getUsername(), provider.getKey());
+        return buildTokenResponse(accessToken, refreshToken, userDetails.getUsername(), provider);
     }
 
     /**
@@ -80,17 +88,18 @@ public class AuthService {
         }
 
         String username = jwtTokenProvider.extractUsername(refreshToken);
+        DataProvider provider = jwtTokenProvider.extractProvider(refreshToken);
         UserDetails userDetails = userDetailsService.loadUserByUsername(username);
 
         // Blacklist the old refresh token (rotation)
         tokenBlacklistService.blacklist(refreshToken, jwtTokenProvider.extractExpiration(refreshToken));
 
         // Issue fresh pair
-        String newAccessToken = jwtTokenProvider.generateAccessToken(userDetails);
-        String newRefreshToken = jwtTokenProvider.generateRefreshToken(userDetails);
+        String newAccessToken = jwtTokenProvider.generateAccessToken(userDetails, provider);
+        String newRefreshToken = jwtTokenProvider.generateRefreshToken(userDetails, provider);
 
-        logger.info("Token refreshed for user: {}", username);
-        return buildTokenResponse(newAccessToken, newRefreshToken, username);
+        logger.info("Token refreshed for user: {} via {}", username, provider.getKey());
+        return buildTokenResponse(newAccessToken, newRefreshToken, username, provider);
     }
 
     /**
@@ -109,11 +118,12 @@ public class AuthService {
         }
     }
 
-    private TokenResponse buildTokenResponse(String accessToken, String refreshToken, String username) {
+    private TokenResponse buildTokenResponse(String accessToken, String refreshToken, String username, DataProvider provider) {
         TokenResponse response = new TokenResponse();
         response.setAccessToken(accessToken);
         response.setRefreshToken(refreshToken);
         response.setUsername(username);
+        response.setProvider(provider.getKey());
         response.setAccessTokenExpiresIn(jwtTokenProvider.getAccessTokenExpiration() / 1000); // seconds
         response.setRefreshTokenExpiresIn(jwtTokenProvider.getRefreshTokenExpiration() / 1000);
         return response;
@@ -133,5 +143,24 @@ public class AuthService {
             return value.toLowerCase(Locale.ROOT);
         }
         return value;
+    }
+
+    private DataProvider resolveProvider(String provider) {
+        try {
+            return DataProvider.fromValue(provider);
+        } catch (IllegalArgumentException ex) {
+            throw new BadCredentialsException(ex.getMessage());
+        }
+    }
+
+    private void validateProviderSpecificAdmin(String username, DataProvider provider) {
+        if (!adminCredentialsProperties.isAdminUsername(username)) {
+            return;
+        }
+        if (adminCredentialsProperties.matchesProviderAdmin(provider, username)) {
+            return;
+        }
+        throw new BadCredentialsException("Use the " + adminCredentialsProperties.usernameFor(provider)
+                + " account for " + provider.getLabel());
     }
 }

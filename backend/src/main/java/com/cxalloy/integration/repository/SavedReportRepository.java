@@ -9,4 +9,5 @@ import java.util.List;
 @Repository
 public interface SavedReportRepository extends JpaRepository<SavedReport, Long> {
     List<SavedReport> findByProjectIdOrderByGeneratedAtDesc(String projectId);
+    List<SavedReport> findByProjectIdAndProviderOrderByGeneratedAtDesc(String projectId, String provider);
 }

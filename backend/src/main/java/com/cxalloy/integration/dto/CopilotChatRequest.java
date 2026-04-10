@@ -7,6 +7,7 @@ public class CopilotChatRequest {
 
     private String apiKey;
     private String model;
+    private String instructions;
     private String prompt;
     private List<String> projectIds = new ArrayList<>();
     private List<CopilotMessage> conversation = new ArrayList<>();
@@ -34,6 +35,14 @@ public class CopilotChatRequest {
 
     public void setPrompt(String prompt) {
         this.prompt = prompt;
+    }
+
+    public String getInstructions() {
+        return instructions;
+    }
+
+    public void setInstructions(String instructions) {
+        this.instructions = instructions;
     }
 
     public List<String> getProjectIds() {

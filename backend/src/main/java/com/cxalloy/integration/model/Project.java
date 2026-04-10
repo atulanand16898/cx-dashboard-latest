@@ -5,7 +5,9 @@ import java.time.LocalDateTime;
 
 @Entity
 @Table(name = "cxalloy_projects", indexes = {
-    @Index(name = "idx_projects_external_id", columnList = "external_id")
+    @Index(name = "idx_projects_external_id", columnList = "external_id"),
+    @Index(name = "idx_projects_provider", columnList = "provider"),
+    @Index(name = "idx_projects_source_key", columnList = "source_key")
 })
 public class Project {
 
@@ -14,8 +16,14 @@ public class Project {
     private Long id;
 
     // CxAlloy uses "project_id" as the unique identifier (not "id")
-    @Column(name = "external_id", unique = true)
+    @Column(name = "external_id")
     private String externalId;
+
+    @Column(name = "provider")
+    private String provider = DataProvider.CXALLOY.getKey();
+
+    @Column(name = "source_key", unique = true)
+    private String sourceKey;
 
     @Column(name = "account_id")
     private String accountId;
@@ -80,6 +88,12 @@ public class Project {
 
     public String getExternalId() { return externalId; }
     public void setExternalId(String externalId) { this.externalId = externalId; }
+
+    public String getProvider() { return provider; }
+    public void setProvider(String provider) { this.provider = provider; }
+
+    public String getSourceKey() { return sourceKey; }
+    public void setSourceKey(String sourceKey) { this.sourceKey = sourceKey; }
 
     public String getAccountId() { return accountId; }
     public void setAccountId(String accountId) { this.accountId = accountId; }

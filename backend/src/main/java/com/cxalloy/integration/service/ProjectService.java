@@ -3,11 +3,13 @@ package com.cxalloy.integration.service;
 import com.cxalloy.integration.client.CxAlloyApiClient;
 import com.cxalloy.integration.dto.SyncResult;
 import com.cxalloy.integration.model.ApiSyncLog;
+import com.cxalloy.integration.model.DataProvider;
 import com.cxalloy.integration.model.Project;
 import com.cxalloy.integration.repository.ProjectRepository;
 import com.fasterxml.jackson.databind.JsonNode;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.util.StringUtils;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -23,13 +25,16 @@ public class ProjectService extends BaseProjectService {
     private final ProjectRepository projectRepository;
     private final CxAlloyApiClient apiClient;
     private final ProjectAccessService projectAccessService;
+    private final FacilityGridProjectService facilityGridProjectService;
 
     public ProjectService(ProjectRepository projectRepository,
                           CxAlloyApiClient apiClient,
-                          ProjectAccessService projectAccessService) {
+                          ProjectAccessService projectAccessService,
+                          FacilityGridProjectService facilityGridProjectService) {
         this.projectRepository = projectRepository;
         this.apiClient = apiClient;
         this.projectAccessService = projectAccessService;
+        this.facilityGridProjectService = facilityGridProjectService;
     }
 
     @Caching(evict = {
@@ -38,6 +43,9 @@ public class ProjectService extends BaseProjectService {
         @CacheEvict(value = "projects-external", allEntries = true)
     })
     public SyncResult syncAllProjects() {
+        if (currentProvider() == DataProvider.FACILITY_GRID) {
+            return facilityGridProjectService.syncAllProjects();
+        }
         long start = System.currentTimeMillis();
         ApiSyncLog log = startLog("/project", "GET");
         try {
@@ -61,6 +69,9 @@ public class ProjectService extends BaseProjectService {
         @CacheEvict(value = "projects-external", allEntries = true)
     })
     public SyncResult syncProjectById(String projectId) {
+        if (currentProvider() == DataProvider.FACILITY_GRID) {
+            return facilityGridProjectService.syncProjectById(projectId);
+        }
         long start = System.currentTimeMillis();
         ApiSyncLog log = startLog("/project/" + projectId, "GET");
         try {
@@ -80,12 +91,16 @@ public class ProjectService extends BaseProjectService {
         }
     }
 
-    @Cacheable(value = "projects-all")
+    @Cacheable(value = "projects-all", key = "@providerContextService.currentProviderKey()")
     @Transactional(readOnly = true)
-    public List<Project> getAll() { return projectRepository.findAll(); }
+    public List<Project> getAll() {
+        return projectRepository.findAll().stream()
+                .filter(project -> providerContextService.matchesCurrentProvider(project.getProvider()))
+                .toList();
+    }
 
-    @Transactional(readOnly = true)
     public List<Project> getAllForCurrentUser() {
+        ensureProviderProjectsLoaded();
         return projectAccessService.filterProjectsForCurrentUser(getAll());
     }
 
@@ -97,10 +112,15 @@ public class ProjectService extends BaseProjectService {
         return project;
     }
 
-    @Cacheable(value = "projects-external", key = "#extId")
+    @Cacheable(value = "projects-external", key = "#extId + '::' + @providerContextService.currentProviderKey()")
     @Transactional(readOnly = true)
     public Optional<Project> getByExternalId(String extId) {
-        Optional<Project> project = projectRepository.findByExternalId(extId);
+        Optional<Project> project = projectRepository.findByExternalIdAndProvider(extId, currentProviderKey());
+        if (project.isEmpty() && currentProvider() == DataProvider.CXALLOY) {
+            project = projectRepository.findAllByExternalId(extId).stream()
+                    .filter(existing -> isLegacyCurrentProviderRecord(existing.getProvider()))
+                    .findFirst();
+        }
         project.ifPresent(value -> projectAccessService.requireProjectAccess(value.getExternalId()));
         return project;
     }
@@ -156,6 +176,8 @@ public class ProjectService extends BaseProjectService {
                        getAsText(n, "id",
                        getAsText(n, "_id", null)));
         p.setExternalId(extId);
+        p.setProvider(currentProviderKey());
+        p.setSourceKey(sourceKeyFor(extId));
 
         p.setAccountId(getAsText(n, "account_id", null));
         p.setName(getAsText(n, "name", getAsText(n, "project_name", "Unknown")));
@@ -190,8 +212,10 @@ public class ProjectService extends BaseProjectService {
             logger.warn("Skipping project with null externalId — raw JSON: {}", p.getRawJson());
             return;
         }
-        projectRepository.findByExternalId(p.getExternalId()).ifPresentOrElse(existing -> {
+        findExistingProject(p).ifPresentOrElse(existing -> {
             existing.setName(p.getName());
+            existing.setProvider(p.getProvider());
+            existing.setSourceKey(p.getSourceKey());
             existing.setAccountId(p.getAccountId());
             existing.setNumber(p.getNumber());
             existing.setStatus(p.getStatus());
@@ -210,5 +234,40 @@ public class ProjectService extends BaseProjectService {
             existing.setSyncedAt(now());
             projectRepository.save(existing);
         }, () -> projectRepository.save(p));
+    }
+
+    private Optional<Project> findExistingProject(Project project) {
+        if (StringUtils.hasText(project.getSourceKey())) {
+            Optional<Project> bySourceKey = projectRepository.findBySourceKey(project.getSourceKey());
+            if (bySourceKey.isPresent()) {
+                return bySourceKey;
+            }
+        }
+        Optional<Project> byCurrentProvider = projectRepository.findByExternalIdAndProvider(
+                project.getExternalId(),
+                currentProviderKey());
+        if (byCurrentProvider.isPresent()) {
+            return byCurrentProvider;
+        }
+        if (currentProvider() == DataProvider.CXALLOY) {
+            return projectRepository.findAllByExternalId(project.getExternalId()).stream()
+                    .filter(existing -> isLegacyCurrentProviderRecord(existing.getProvider()))
+                    .findFirst();
+        }
+        return Optional.empty();
+    }
+
+    private void ensureProviderProjectsLoaded() {
+        if (currentProvider() != DataProvider.FACILITY_GRID) {
+            return;
+        }
+        if (projectRepository.countByProviderIgnoreCase(currentProviderKey()) > 0) {
+            return;
+        }
+        try {
+            facilityGridProjectService.syncAllProjects();
+        } catch (Exception ex) {
+            logger.warn("Facility Grid project auto-sync failed: {}", ex.getMessage());
+        }
     }
 }

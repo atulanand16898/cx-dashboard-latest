@@ -1,5 +1,6 @@
 package com.cxalloy.integration.dto;
 
+import com.cxalloy.integration.model.DataProvider;
 import java.time.LocalDateTime;
 
 public class TokenResponse {
@@ -10,6 +11,7 @@ public class TokenResponse {
     private long accessTokenExpiresIn;
     private long refreshTokenExpiresIn;
     private String username;
+    private String provider = DataProvider.CXALLOY.getKey();
     private LocalDateTime issuedAt;
 
     public TokenResponse() {
@@ -33,6 +35,9 @@ public class TokenResponse {
 
     public String getUsername() { return username; }
     public void setUsername(String username) { this.username = username; }
+
+    public String getProvider() { return provider; }
+    public void setProvider(String provider) { this.provider = provider; }
 
     public LocalDateTime getIssuedAt() { return issuedAt; }
     public void setIssuedAt(LocalDateTime issuedAt) { this.issuedAt = issuedAt; }
