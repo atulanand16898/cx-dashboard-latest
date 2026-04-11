@@ -33,3 +33,7 @@ git reset --hard "origin/$BRANCH"
 
 docker compose --env-file .env.production -f docker-compose.prod.yml up -d --build
 docker image prune -f
+
+echo
+echo "Deployment complete."
+docker compose --env-file .env.production -f docker-compose.prod.yml ps

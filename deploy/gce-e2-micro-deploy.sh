@@ -34,4 +34,4 @@ docker image prune -f
 
 echo
 echo "Deployment complete."
-docker compose -f docker-compose.prod.yml ps
+docker compose --env-file .env.production -f docker-compose.prod.yml ps

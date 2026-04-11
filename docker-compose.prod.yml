@@ -65,8 +65,27 @@ services:
     restart: unless-stopped
     depends_on:
       - backend
+    expose:
+      - "80"
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      - frontend
+    environment:
+      APP_DOMAIN: ${APP_DOMAIN}
     ports:
       - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
     logging:
       options:
         max-size: "10m"
@@ -75,3 +94,5 @@ services:
 volumes:
   postgres_data:
   project_files_data:
+  caddy_data:
+  caddy_config:

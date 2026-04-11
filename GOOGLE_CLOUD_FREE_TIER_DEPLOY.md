@@ -7,7 +7,8 @@ This project can run on a Google Compute Engine always-free `e2-micro` VM by usi
 - `1 x e2-micro` VM
 - Ubuntu LTS
 - Docker + Docker Compose
-- React frontend served by nginx on port `80`
+- Caddy on ports `80` and `443` for automatic HTTPS
+- React frontend served internally behind Caddy
 - Spring Boot backend on internal port `8081`
 - PostgreSQL in Docker
 
@@ -22,7 +23,7 @@ In Google Cloud Console:
    - Machine type: `e2-micro`
    - Region: `us-central1`, `us-east1`, or `us-west1`
    - Boot disk: Ubuntu LTS
-   - Firewall: allow `HTTP`
+   - Firewall: allow `HTTP` and `HTTPS`
 5. Reserve or note the external IP.
 
 ## 2. SSH into the VM
@@ -60,7 +61,8 @@ Set at least:
 POSTGRES_DB=cxalloydb
 DB_USERNAME=cxalloy
 DB_PASSWORD=change-me
-CORS_ALLOWED_ORIGINS=http://YOUR_GCE_EXTERNAL_IP
+APP_DOMAIN=YOUR_DOMAIN
+CORS_ALLOWED_ORIGINS=https://YOUR_DOMAIN,https://www.YOUR_DOMAIN
 CXALLOY_API_IDENTIFIER=replace-me
 CXALLOY_API_SECRET=replace-me
 FACILITYGRID_API_CLIENT_ID=
@@ -74,7 +76,15 @@ DB_POOL_MAX_SIZE=6
 JAVA_TOOL_OPTIONS=-XX:MaxRAM=384m -XX:InitialRAMPercentage=20 -XX:+UseSerialGC
 ```
 
-If you later attach a domain, replace `CORS_ALLOWED_ORIGINS` with your real site URL.
+Point your DNS to the VM before deploying:
+
+```text
+A     @       YOUR_VM_IP
+CNAME www     @
+```
+
+For GoDaddy, add those records in the DNS manager and remove conflicting forwarding or parking records.
+Once DNS is live and ports `80` and `443` are open, Caddy will request and renew the HTTPS certificate automatically.
 The `project_files_data` Docker volume keeps Files-tab uploads and AI file-library context across container rebuilds.
 
 ## 5. Deploy
@@ -90,7 +100,7 @@ sudo APP_DIR=/opt/cx-dashboard-latest BRANCH=main /opt/cx-dashboard-latest/deplo
 Visit:
 
 ```text
-http://YOUR_GCE_EXTERNAL_IP
+https://YOUR_DOMAIN
 ```
 
 ## 7. Update the app later
