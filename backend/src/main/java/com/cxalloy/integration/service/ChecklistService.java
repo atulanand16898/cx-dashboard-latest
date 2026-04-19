@@ -456,6 +456,15 @@ public class ChecklistService extends BaseProjectService {
 
         String lower = s.toLowerCase();
 
+        // Primary method precedence:
+        // RED = L1 or L2A, YELLOW = L2 or L2B, GREEN = L3, BLUE = L4
+        if (lower.matches(".*\\bl2[-_\\s]?a\\b.*") || lower.matches(".*\\blevel[-_\\s]?2[-_\\s]?a\\b.*")) return "red";
+        if (lower.matches(".*\\bl2[-_\\s]?b\\b.*") || lower.matches(".*\\blevel[-_\\s]?2[-_\\s]?b\\b.*")) return "yellow";
+        if (lower.matches(".*\\bl1\\b.*") || lower.contains("level-1") || lower.contains("level 1")) return "red";
+        if (lower.matches(".*\\bl2\\b.*") || lower.contains("level-2") || lower.contains("level 2")) return "yellow";
+        if (lower.matches(".*\\bl3\\b.*") || lower.contains("level-3") || lower.contains("level 3")) return "green";
+        if (lower.matches(".*\\bl4\\b.*") || lower.contains("level-4") || lower.contains("level 4")) return "blue";
+
         // ── ITR patterns — word-boundary safe ────────────────────────────────
         if (lower.matches(".*\bitr[-_\s]?a\b.*") || lower.equals("itr-a") || lower.equals("itra")) return "red";
         if (lower.matches(".*\bitr[-_\s]?b\b.*") || lower.equals("itr-b") || lower.equals("itrb")) return "yellow";

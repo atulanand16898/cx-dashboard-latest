@@ -222,6 +222,24 @@ public class FacilityGridChecklistService extends BaseProjectService {
         }
 
         String value = raw.trim().toLowerCase(Locale.ROOT);
+        if (value.matches(".*\\bl2[-_\\s]?a\\b.*") || value.matches(".*\\blevel[-_\\s]?2[-_\\s]?a\\b.*")) {
+            return "red";
+        }
+        if (value.matches(".*\\bl2[-_\\s]?b\\b.*") || value.matches(".*\\blevel[-_\\s]?2[-_\\s]?b\\b.*")) {
+            return "yellow";
+        }
+        if (value.matches(".*\\bl1\\b.*") || value.contains("level-1") || value.contains("level 1")) {
+            return "red";
+        }
+        if (value.matches(".*\\bl2\\b.*") || value.contains("level-2") || value.contains("level 2")) {
+            return "yellow";
+        }
+        if (value.matches(".*\\bl3\\b.*") || value.contains("level-3") || value.contains("level 3")) {
+            return "green";
+        }
+        if (value.matches(".*\\bl4\\b.*") || value.contains("level-4") || value.contains("level 4")) {
+            return "blue";
+        }
         if (value.matches(".*\\bred\\b.*") || value.contains("level-1") || value.contains("level 1") || value.matches(".*\\bl1\\b.*") || value.contains("fat")) {
             return "red";
         }

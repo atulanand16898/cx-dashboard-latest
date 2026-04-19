@@ -3684,10 +3684,10 @@ public class SavedReportService {
     private String tagDisplayLabel(String rawTag) {
         String tag = normalize(rawTag);
         return switch (tag) {
-            case "red" -> "L1 Red Tag";
-            case "yellow" -> "L2 Yellow Tag";
-            case "green" -> "L3 Green Tag";
-            case "blue" -> "L4 Blue Tag";
+            case "red" -> "Red Tag (L1 / L2A)";
+            case "yellow" -> "Yellow Tag (L2 / L2B)";
+            case "green" -> "Green Tag (L3)";
+            case "blue" -> "Blue Tag (L4)";
             case "white" -> "L5 White Tag";
             default -> "";
         };

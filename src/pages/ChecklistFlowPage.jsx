@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react'
 import { useProject } from '../context/ProjectContext'
 import { checklistsApi } from '../services/api'
+import { checklistTagDisplayLabel, deriveChecklistTag } from '../utils/checklistTagUtils'
 
 const TAG_COLORS = {
   'level-2 yellow': { bg: '#eab308', label: 'Level-2 YELLOW Tag QA/QC/IVC' },
@@ -10,14 +11,7 @@ const TAG_COLORS = {
 }
 
 function classifyType(c) {
-  // tagLevel = pre-computed "red"|"yellow"|"green"|"blue"
-  // checklistType = full CxAlloy string "Level-2 YELLOW Tag QA/QC/IVC"
-  const lev = (c.tagLevel || c.tag_level || c.checklistType || c.name || '').toLowerCase()
-  if (lev.includes('red') || lev.includes('l1') || lev.includes('level-1') || lev.includes('level 1')) return 'Level-1 RED Tag FAT'
-  if (lev.includes('yellow') || lev.includes('l2') || lev.includes('level-2') || lev.includes('level 2')) return 'Level-2 YELLOW Tag QA/QC/IVC'
-  if (lev.includes('green') || lev.includes('l3') || lev.includes('level-3') || lev.includes('level 3')) return 'Level-3 GREEN Tag Start-Up/PFC'
-  if (lev.includes('blue') || lev.includes('l4') || lev.includes('level-4') || lev.includes('level 4')) return 'Level-4 BLUE Tag'
-  return 'Other'
+  return checklistTagDisplayLabel(deriveChecklistTag(c))
 }
 
 function classifyStatus(c) {

@@ -3,13 +3,11 @@ import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContaine
 import { Zap } from 'lucide-react'
 import { useProject } from '../context/ProjectContext'
 import { checklistsApi, issuesApi, tasksApi } from '../services/api'
+import { CHECKLIST_TAG_COLORS, DASHBOARD_CHECKLIST_TAG_ORDER, checklistTagDisplayLabel, deriveChecklistTag } from '../utils/checklistTagUtils'
 
 const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
-const SUMMARY_MATRIX_TAG_ORDER = ['red', 'yellow', 'green', 'blue']
-const TAG_COLORS_MAP = {
-  red: '#ef4444', yellow: '#eab308', green: '#22c55e',
-  blue: '#3b82f6', white: '#94a3b8',
-}
+const SUMMARY_MATRIX_TAG_ORDER = DASHBOARD_CHECKLIST_TAG_ORDER
+const TAG_COLORS_MAP = CHECKLIST_TAG_COLORS
 
 // ── ISO week label ─────────────────────────────────────────────────────────────
 function isoWeekLabel(d) {
@@ -43,7 +41,16 @@ function pickDate(c) {
       || c.createdAt || c.created_at || null
 }
 
-function calculateDailyRunRate(items, dateAccessor = pickDate) {
+function pickClosedDate(c) {
+  if (!isDone(c?.status)) return null
+  return c.latestFinishedDate || c.latest_finished_date
+      || c.actualFinishDate || c.actual_finish_date
+      || c.completedDate || c.completed_date
+      || c.updatedAt || c.updated_at
+      || null
+}
+
+function calculateDailyRunRate(items, dateAccessor = pickClosedDate) {
   if (!items.length) return 0
   const dates = items
     .map(item => {
@@ -65,6 +72,8 @@ function calculateDailyRunRate(items, dateAccessor = pickDate) {
 // Uses tagLevel from backend first (which now handles ITR-A/B/C/D).
 // Falls back to checklistType text analysis for older / un-re-synced records.
 function deriveTag(c) {
+  return deriveChecklistTag(c)
+
   // 1. Highest priority: explicit tag_color or color field (some CxAlloy versions return this)
   const directColor = (c.tagColor || c.tag_color || c.color || '').toLowerCase().trim()
   if (['red', 'yellow', 'green', 'blue'].includes(directColor)) return directColor
@@ -163,9 +172,9 @@ function computeStats(checklists, issues, tasks) {
   //   → 522/4 = 130.5/day (massively inflated). Calendar range is stable.
   //
   // Verified: 522 closed over ~37 calendar days → 14.1/day ≈ 14.2, 99.3/week ✓
-  const closedChecklists = checklists.filter(c => isDone(c.status))
   let runRatePerWeek = 0
   let avgPerDay      = 0
+  const closedChecklists = checklists.filter(c => isDone(c.status))
   if (closedChecklists.length > 0) {
     avgPerDay = calculateDailyRunRate(closedChecklists)
     runRatePerWeek = +(avgPerDay * 7).toFixed(1)
@@ -173,8 +182,8 @@ function computeStats(checklists, issues, tasks) {
 
   // ── Weekly counts (ISO week) for best/worst week ─────────────────────────
   const weekMap = new Map()
-  checklists.forEach(c => {
-    const raw = pickDate(c)
+  closedChecklists.forEach(c => {
+    const raw = pickClosedDate(c)
     if (!raw) return
     const d = new Date(raw)
     if (isNaN(d)) return
@@ -195,12 +204,10 @@ function computeStats(checklists, issues, tasks) {
 
   // ── Daily bar chart — activity per day-of-week across ALL data ────────────
   // FIX 2 — modum.me does NOT restrict to the current ISO week only.
-  // It aggregates all checklists by day-of-week across the whole dataset,
-  // which is why Thu shows 335 (many checklists updated/completed on Thursdays
-  // across all weeks) — not just this week's Thursday count.
+  // It aggregates closed checklists by day-of-week across the whole dataset.
   const dayMap = new Map(DAYS.map(d => [d, 0]))
-  checklists.forEach(c => {
-    const raw = pickDate(c)
+  closedChecklists.forEach(c => {
+    const raw = pickClosedDate(c)
     if (!raw) return
     const d = new Date(raw)
     if (isNaN(d)) return
@@ -210,11 +217,11 @@ function computeStats(checklists, issues, tasks) {
     dayMap.set(DAYS[idx], (dayMap.get(DAYS[idx]) || 0) + 1)
   })
 
-  // allTimeAvgPerDayOfWeek = total checklists / 7 days
-  // This is what the green reference line sits at (e.g. 525/7 = 75).
+  // allTimeAvgPerDayOfWeek = closed checklists / 7 days
+  // This is what the green reference line sits at for closure pace.
   // Must be computed BEFORE dailyData so we can embed it as the `avg` field
   // that the CustomTooltip reads — ensuring tooltip shows 75 not 14.5.
-  const allTimeAvgPerDayOfWeek = +(total / 7).toFixed(1)
+  const allTimeAvgPerDayOfWeek = +(closed / 7).toFixed(1)
 
   // avg field in each data point = the reference line value (allTimeAvgPerDayOfWeek)
   // so when the user hovers a bar, the tooltip shows the correct green-line value.
@@ -227,8 +234,8 @@ function computeStats(checklists, issues, tasks) {
   const aboveAvgDays = dailyData.filter(d => d.count > allTimeAvgPerDayOfWeek).length
 
   const insightText = bestDay.count > 0
-    ? `${bestDay.day} is outperforming the average line. Bars below the green line are under the current weekday baseline.`
-    : 'No checklist activity recorded this week yet.'
+    ? `${bestDay.day} is outperforming the closure average line. Bars below the green line are under the current closed-checklist weekday baseline.`
+    : 'No checklist closures recorded yet.'
 
   // ── Tag / color split ─────────────────────────────────────────────────────
   // FIX 5 — cache deriveTag() per checklist so each item is only classified
@@ -238,7 +245,7 @@ function computeStats(checklists, issues, tasks) {
   const tagCache = new Map()
   checklists.forEach(c => tagCache.set(c, deriveTag(c)))
 
-  const colorCounts = { red: 0, yellow: 0, green: 0, blue: 0, white: 0 }
+  const colorCounts = { red: 0, yellow: 0, green: 0, blue: 0, non_critical: 0, white: 0 }
   checklists.forEach(c => {
     const tag = tagCache.get(c)
     colorCounts[tag] = (colorCounts[tag] || 0) + 1
@@ -326,7 +333,7 @@ const SummaryDonut = ({ total, closed }) => {
   )
 }
 
-const TagDonutCard = ({ tag, label, count, closedOfTag, pct, dailyRunRate }) => {
+const TagDonutCard = ({ tag, label, count, closedOfTag, pct, dailyRunRate, style }) => {
   const stroke = TAG_COLORS_MAP[tag] || '#64748b'
   const radius = 30
   const circumference = 2 * Math.PI * radius
@@ -342,6 +349,7 @@ const TagDonutCard = ({ tag, label, count, closedOfTag, pct, dailyRunRate }) => 
       alignItems: 'center',
       gap: 14,
       boxShadow: `inset 0 1px 0 rgba(255,255,255,0.03), 0 14px 24px ${stroke}12`,
+      ...style,
     }}>
       <svg width={78} height={78} style={{ flexShrink: 0 }}>
         <defs>
@@ -371,7 +379,7 @@ const TagDonutCard = ({ tag, label, count, closedOfTag, pct, dailyRunRate }) => 
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 4 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
-                    <div style={{ width: 10, height: 10, borderRadius: '50%', background: stroke, boxShadow: `0 0 0 4px ${stroke}22`, flexShrink: 0 }} />
+            <div style={{ width: 10, height: 10, borderRadius: '50%', background: stroke, boxShadow: `0 0 0 4px ${stroke}22`, flexShrink: 0 }} />
             <span style={{ fontSize: 13, color: 'var(--text-primary)', fontWeight: 700 }}>
               {label || tag}
             </span>
@@ -525,15 +533,16 @@ export default function TrackerPulsePage() {
 
           {/* Color rows — now using deriveTag() so red/yellow/green/blue show correctly */}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 10 }}>
-            {stats.colorRows.map(({ tag, count, closedOfTag, pct, dailyRunRate }) => (
+            {stats.colorRows.map(({ tag, count, closedOfTag, pct, dailyRunRate }, index) => (
               <TagDonutCard
                 key={tag}
                 tag={tag}
-                label={tag.charAt(0).toUpperCase() + tag.slice(1)}
+                label={checklistTagDisplayLabel(tag)}
                 count={count}
                 closedOfTag={closedOfTag}
                 pct={pct}
                 dailyRunRate={dailyRunRate}
+                style={index === stats.colorRows.length - 1 && stats.colorRows.length % 2 === 1 ? { gridColumn: '1 / -1' } : undefined}
               />
             ))}
           </div>
@@ -543,15 +552,15 @@ export default function TrackerPulsePage() {
         <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 14, padding: '20px' }}>
           <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 2 }}>Weekly Progress</div>
           <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4 }}>
-            Daily checklist breakdown with {stats.avgPerDay} daily run rate from latest updates
+            Daily checklist closures with {stats.avgPerDay} daily run rate from closure dates
           </div>
           <div style={{ fontSize: 28, fontWeight: 800, color: 'var(--text-primary)', marginBottom: 2 }}>
-            {stats.total.toLocaleString()}
+            {stats.closed.toLocaleString()}
           </div>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
-            <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Overall visible checklists</div>
+            <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Closed checklists in current dataset</div>
             <div style={{ fontSize: 11, fontWeight: 600, color: '#60a5fa', background: 'rgba(96,165,250,0.12)', padding: '3px 8px', borderRadius: 6 }}>
-              Best day {stats.bestDay.day} ({stats.bestDay.count})
+              Best closure day {stats.bestDay.day} ({stats.bestDay.count})
             </div>
           </div>
 
@@ -577,13 +586,13 @@ export default function TrackerPulsePage() {
 
           <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 4, display: 'flex', alignItems: 'center', gap: 6 }}>
             <div style={{ width: 20, height: 2, background: '#22c55e' }} />
-            <span>Average: {stats.allTimeAvgPerDayOfWeek}/day</span>
+            <span>Closure average: {stats.allTimeAvgPerDayOfWeek}/day</span>
           </div>
 
           {/* Stats row */}
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10, marginTop: 14, paddingTop: 14, borderTop: '1px solid var(--divider)' }}>
             {[
-              { label: 'DAILY RUN RATE', value: stats.avgPerDay, unit: 'checklists/day' },
+              { label: 'DAILY RUN RATE', value: stats.avgPerDay, unit: 'closures/day' },
               { label: 'BEST DAY',      value: `${stats.bestDay.day} (${stats.bestDay.count})` },
               { label: 'ABOVE AVG DAYS', value: stats.aboveAvgDays },
             ].map(m => (
@@ -606,14 +615,14 @@ export default function TrackerPulsePage() {
         <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 14, padding: '20px' }}>
           <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 4 }}>Projected Completion</div>
           <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 14 }}>
-            Projected from closed checklists and current latest-update daily run rate
+            Projected from closed checklists and current closure-date daily run rate
           </div>
 
           <div style={{ fontSize: 26, fontWeight: 800, color: 'var(--text-primary)', marginBottom: 4 }}>
             {stats.projectedCompletion.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
           </div>
           <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 18 }}>
-            Projected from latest checklist updates.
+            Projected from checklist closure pace.
           </div>
 
           {/* Progress bars */}
@@ -663,7 +672,7 @@ export default function TrackerPulsePage() {
           {/* Narrative */}
           {stats.remaining > 0 && stats.avgPerDay > 0 && (
             <div style={{ padding: '10px 14px', background: 'var(--border-subtle)', borderRadius: 8, fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.5 }}>
-              At the current latest-update daily run rate of {stats.avgPerDay} checklists/day, the project needs about {Math.ceil(stats.daysNeeded)} more day{Math.ceil(stats.daysNeeded) !== 1 ? 's' : ''} to close the remaining {stats.remaining} checklist{stats.remaining !== 1 ? 's' : ''}.
+              At the current checklist closure daily run rate of {stats.avgPerDay} checklists/day, the project needs about {Math.ceil(stats.daysNeeded)} more day{Math.ceil(stats.daysNeeded) !== 1 ? 's' : ''} to close the remaining {stats.remaining} checklist{stats.remaining !== 1 ? 's' : ''}.
             </div>
           )}
         </div>

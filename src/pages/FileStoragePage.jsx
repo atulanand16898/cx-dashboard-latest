@@ -135,7 +135,7 @@ export default function FileStoragePage() {
   const [showDuplicates, setShowDuplicates] = useState(false)
   const [exporting, setExporting] = useState(false)
   const [filesVisible, setFilesVisible] = useState(10)
-  const hasData = !!report
+  const hasData = !!report                                                                                          
 
   const loadReport = useCallback(async (forceAnalyze = false) => {
     if (!activeProject) return

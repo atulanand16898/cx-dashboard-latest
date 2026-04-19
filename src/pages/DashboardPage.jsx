@@ -4,6 +4,7 @@ import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContaine
 import { useProject } from '../context/ProjectContext'
 import { issuesApi, tasksApi, checklistsApi } from '../services/api'
 import { DonutChart, StatCard, CardSkeleton } from '../components/ui'
+import { CHECKLIST_TAG_COLORS, DASHBOARD_CHECKLIST_TAG_ORDER, checklistTagDisplayLabel, deriveChecklistTag } from '../utils/checklistTagUtils'
 import toast from 'react-hot-toast'
 
 // ─── ISO week label (correct ISO-8601) ───────────────────────────────────────
@@ -92,22 +93,24 @@ function buildWeeklyData(issues, period) {
 
 // ─── Real checklist tag breakdown ────────────────────────────────────────────
 function buildTagLevels(checklists) {
-  const counts = { red: 0, yellow: 0, green: 0, blue: 0 }
-  const done   = { red: 0, yellow: 0, green: 0, blue: 0 }
+  const counts = { red: 0, yellow: 0, green: 0, blue: 0, non_critical: 0 }
+  const done   = { red: 0, yellow: 0, green: 0, blue: 0, non_critical: 0 }
   const DONE_ST = new Set(['finished','complete','completed','done','closed','signed_off','approved','passed'])
 
   checklists.forEach(c => {
-    const lev = (c.tagLevel || c.tag_level || c.checklistType || c.checklist_type || '').toLowerCase()
-    let tag = null
-    if (lev === 'red'    || lev.includes('red')    || /level.?1/.test(lev)) tag = 'red'
-    else if (lev === 'yellow' || lev.includes('yellow') || /level.?2/.test(lev)) tag = 'yellow'
-    else if (lev === 'green'  || lev.includes('green')  || /level.?3/.test(lev)) tag = 'green'
-    else if (lev === 'blue'   || lev.includes('blue')   || /level.?4/.test(lev)) tag = 'blue'
-    if (!tag) return
+    const tag = deriveChecklistTag(c)
+    if (!DASHBOARD_CHECKLIST_TAG_ORDER.includes(tag)) return
     counts[tag]++
     const st = (c.status || '').toLowerCase().replace(/[ \-]/g, '_')
     if (DONE_ST.has(st)) done[tag]++
   })
+
+  return DASHBOARD_CHECKLIST_TAG_ORDER.map(tag => ({
+    label: checklistTagDisplayLabel(tag),
+    color: CHECKLIST_TAG_COLORS[tag],
+    done: done[tag],
+    total: counts[tag],
+  }))
 
   return [
     { label: 'Level 1 — Red',    color: '#ef4444', done: done.red,    total: counts.red    },
@@ -268,7 +271,7 @@ export default function DashboardPage() {
         </div>
 
         {/* Tag level donuts — real data from checklist tagLevel field */}
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12 }}>
           {tagLevels.map(level => (
             <div key={level.label} style={{ background: 'var(--bg-card-light)', border: '1px solid var(--border)', borderRadius: 14, padding: '18px 12px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10, boxShadow: 'var(--shadow-card)' }}>
               <DonutChart

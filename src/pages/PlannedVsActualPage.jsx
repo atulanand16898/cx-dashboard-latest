@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react'
 import ReactDOM from 'react-dom'
 import {
-  ComposedChart, Line, XAxis, YAxis, CartesianGrid, LabelList,
+  ComposedChart, Line, Bar, XAxis, YAxis, CartesianGrid, LabelList,
   Tooltip, ResponsiveContainer,
 } from 'recharts'
 import {
@@ -11,6 +11,7 @@ import {
 } from 'lucide-react'
 import { useProject } from '../context/ProjectContext'
 import { checklistsApi } from '../services/api'
+import { checklistTagDisplayLabel, deriveChecklistTag } from '../utils/checklistTagUtils'
 import toast from 'react-hot-toast'
 
 // ─── CxAlloy deep-link ────────────────────────────────────────────────────────
@@ -42,6 +43,15 @@ function pickDate(c) {
       || c.createdAt || c.created_at || null
 }
 
+function pickClosedDate(c) {
+  if (!isDone(c?.status)) return null
+  return c.latestFinishedDate || c.latest_finished_date
+      || c.actualFinishDate || c.actual_finish_date
+      || c.completedDate || c.completed_date
+      || c.updatedAt || c.updated_at
+      || null
+}
+
 function pickDueDate(c) {
   return c.dueDate || c.due_date || c.plannedDate || c.planned_date || null
 }
@@ -55,6 +65,8 @@ const isDone = s => DONE.has((s || '').toLowerCase().replace(/[ \-]/g,'_'))
 // Handles: explicit color words, ITR-A/B/C/D (CxAlloy standard),
 // bare L1/L2/L3/L4 prefixes, and level.?N patterns.
 function normaliseTag(c) {
+  return deriveChecklistTag(c)
+
   // Trust tagLevel from backend ONLY if it is a real color (not white/blank).
   // "white" from the backend means "could not classify" — we must still try
   // checklistType / name before giving up and returning white.
@@ -303,7 +315,7 @@ function buildSCurveData(checklists, planRows, view = 'Overall') {
     const actualCumByBucket = new Map()
     const actualBucketCounts = new Map()
     checklists.forEach(c => {
-      const raw = pickDate(c)
+      const raw = pickClosedDate(c)
       if (!raw) return
       const d = new Date(raw)
       if (isNaN(d)) return
@@ -333,7 +345,7 @@ function buildSCurveData(checklists, planRows, view = 'Overall') {
 
   const weekMap = new Map()
   checklists.forEach(c => {
-    const raw = pickDate(c)
+    const raw = pickClosedDate(c)
     if (!raw) return
     const d = new Date(raw)
     if (isNaN(d)) return
@@ -369,7 +381,8 @@ function buildSCurveColumnData(checklists, planRows, view = 'W', selectedTag = '
 
   const actualBucketMap = new Map()
   checklists.forEach(c => {
-    const raw = pickDate(c)
+    if (!isDone(c.status)) return
+    const raw = pickClosedDate(c)
     if (!raw) return
     const d = new Date(raw)
     if (isNaN(d)) return
@@ -394,13 +407,24 @@ function buildSCurveColumnData(checklists, planRows, view = 'W', selectedTag = '
   const allBuckets = Array.from(new Set([
     ...actualBucketMap.keys(),
     ...planBucketMap.keys(),
+    ...(!planRows?.length
+      ? checklists
+          .filter(c => includeTag(normaliseTag(c)))
+          .map(c => pickDate(c))
+          .filter(Boolean)
+          .map(raw => {
+            const d = new Date(raw)
+            return isNaN(d) ? null : dateBucket(d, view)
+          })
+          .filter(Boolean)
+      : []),
   ])).sort((a, b) => getBucketSortValue(a, view) - getBucketSortValue(b, view))
 
   if (!allBuckets.length) return []
 
   let cumActual = 0
   let cumTarget = 0
-  const totalActual = checklists.filter((c) => includeTag(normaliseTag(c))).length
+  const syntheticTargetTotal = checklists.filter((c) => includeTag(normaliseTag(c))).length
 
   return allBuckets.map((bucket, index) => {
     const actualTotal = actualBucketMap.get(bucket) || 0
@@ -409,7 +433,7 @@ function buildSCurveColumnData(checklists, planRows, view = 'W', selectedTag = '
     if (planRows?.length) {
       cumTarget += planTotal
     } else {
-      cumTarget = Math.round(((index + 1) / allBuckets.length) * totalActual)
+      cumTarget = Math.round(((index + 1) / allBuckets.length) * syntheticTargetTotal)
     }
     return {
       week: bucket,
@@ -423,11 +447,12 @@ function buildSCurveColumnData(checklists, planRows, view = 'W', selectedTag = '
 }
 
 function buildPaceMetrics(checklists) {
-  if (!checklists.length) return { d: 0, w: 0, m: 0, cumulative: checklists.length }
+  const closedChecklists = checklists.filter(c => isDone(c.status))
+  if (!closedChecklists.length) return { d: 0, w: 0, m: 0, cumulative: 0 }
 
   const weekMap = new Map()
-  checklists.forEach(c => {
-    const raw = pickDate(c)
+  closedChecklists.forEach(c => {
+    const raw = pickClosedDate(c)
     if (!raw) return
     const d = new Date(raw)
     if (isNaN(d)) return
@@ -443,7 +468,7 @@ function buildPaceMetrics(checklists) {
     d: +(w / 7).toFixed(1),
     w,
     m: +(w * 4.33).toFixed(1),
-    cumulative: checklists.length,
+    cumulative: closedChecklists.length,
   }
 }
 
@@ -471,11 +496,7 @@ function computeOverdue(checklists, planRows) {
       const rawType = matched?.checklistType || matched?.checklist_type || ''
       let tagLabel = rawType
       if (!tagLabel) {
-        if (tag === 'red') tagLabel = 'Level-1 RED Tag FAT'
-        else if (tag === 'yellow') tagLabel = 'Level-2 YELLOW Tag QA/QC/IVC'
-        else if (tag === 'green') tagLabel = 'Level-3 GREEN Tag Start-Up/PFC'
-        else if (tag === 'blue') tagLabel = 'Level-4 BLUE Tag Sign-Off'
-        else tagLabel = 'Checklist'
+        tagLabel = checklistTagDisplayLabel(tag)
       }
 
       results.push({
@@ -557,11 +578,7 @@ function computeNext14Days(checklists, planRows) {
       // Build tagLabel from the checklist's checklistType if matched, else derive from tag
       let tagLabel = matched?.checklistType || matched?.checklist_type || ''
       if (!tagLabel) {
-        if (tag === 'red')    tagLabel = 'Level-1 RED Tag FAT'
-        else if (tag === 'yellow') tagLabel = 'Level-2 YELLOW Tag QA/QC/IVC'
-        else if (tag === 'green')  tagLabel = 'Level-3 GREEN Tag Start-Up/PFC'
-        else if (tag === 'blue')   tagLabel = 'Level-4 BLUE Tag Sign-Off'
-        else tagLabel = 'Checklist'
+        tagLabel = checklistTagDisplayLabel(tag)
       }
 
       items.push({
@@ -586,11 +603,7 @@ function computeNext14Days(checklists, planRows) {
     const tc = TAG_COLORS[tag] || TAG_COLORS.other
     let tagLabel = rawType
     if (!tagLabel) {
-      if      (tag === 'red')    tagLabel = 'Level-1 RED Tag FAT'
-      else if (tag === 'yellow') tagLabel = 'Level-2 YELLOW Tag QA/QC/IVC'
-      else if (tag === 'green')  tagLabel = 'Level-3 GREEN Tag Start-Up/PFC'
-      else if (tag === 'blue')   tagLabel = 'Level-4 BLUE Tag Sign-Off'
-      else                       tagLabel = 'Checklist'
+      tagLabel = checklistTagDisplayLabel(tag)
     }
     const actDate = dateOverride
       || (due ? new Date(due) : null)
@@ -785,6 +798,7 @@ export default function PlannedVsActualPage() {
   const [chartView, setChartView] = useState('W') // 'Overall' | 'D' | 'W' | 'M'
   const [chartTag, setChartTag] = useState('all')
   const [showCumulative, setShowCumulative] = useState(true)
+  const [chartSeriesMode, setChartSeriesMode] = useState('line')
   const fileInputRef = React.useRef(null)
 
   const handlePlanImport = async (e) => {
@@ -875,6 +889,9 @@ export default function PlannedVsActualPage() {
     overdueItems.forEach(i => { counts[i.tag] = (counts[i.tag] || 0) + 1 })
     return counts
   }, [overdueItems])
+
+  const actualSeriesColor = chartTag === 'all' ? '#22c55e' : TAG_COLORS[chartTag]?.dot || '#22c55e'
+  const actualSeriesTextColor = chartTag === 'all' ? '#4ade80' : TAG_COLORS[chartTag]?.text || '#4ade80'
 
   if (!targets.length) {
     return (
@@ -973,10 +990,10 @@ export default function PlannedVsActualPage() {
         <>
           {/* Pace Cards */}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 14 }}>
-            <PaceCard label="D Value"    value={paceMetrics.d}                          desc="Checklist pace per day"    color="#38bdf8" />
-            <PaceCard label="W Value"    value={paceMetrics.w}                          desc="Checklist pace per week"   color="#4ade80" />
-            <PaceCard label="M Value"    value={paceMetrics.m}                          desc="Checklist pace per month"  color="#f59e0b" />
-            <PaceCard label="Cumulative" value={paceMetrics.cumulative.toLocaleString()} desc="Overall cumulative checklists" color="#a78bfa" />
+            <PaceCard label="D Value"    value={paceMetrics.d}                          desc="Closed checklist pace per day"    color="#38bdf8" />
+            <PaceCard label="W Value"    value={paceMetrics.w}                          desc="Closed checklist pace per week"   color="#4ade80" />
+            <PaceCard label="M Value"    value={paceMetrics.m}                          desc="Closed checklist pace per month"  color="#f59e0b" />
+            <PaceCard label="Cumulative" value={paceMetrics.cumulative.toLocaleString()} desc="Overall cumulative closed checklists" color="#a78bfa" />
           </div>
 
           {/* S-Curve */}
@@ -1000,6 +1017,30 @@ export default function PlannedVsActualPage() {
                 >
                   CUM {showCumulative ? 'On' : 'Off'}
                 </button>
+                <div style={{ display: 'flex', gap: 4 }}>
+                  {[
+                    { key: 'line', label: 'Lines' },
+                    { key: 'bar', label: 'Bars' },
+                  ].map(mode => (
+                    <button
+                      key={mode.key}
+                      onClick={() => setChartSeriesMode(mode.key)}
+                      style={{
+                        padding: '4px 12px',
+                        borderRadius: 999,
+                        fontSize: 12,
+                        fontWeight: 700,
+                        cursor: 'pointer',
+                        background: chartSeriesMode === mode.key ? 'rgba(59,130,246,0.14)' : 'transparent',
+                        border: `1px solid ${chartSeriesMode === mode.key ? 'rgba(59,130,246,0.32)' : 'var(--border)'}`,
+                        color: chartSeriesMode === mode.key ? '#93c5fd' : '#94a3b8',
+                        transition: 'all 0.15s',
+                      }}
+                    >
+                      {mode.label}
+                    </button>
+                  ))}
+                </div>
                 <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
                   {['all', 'red', 'yellow', 'green', 'blue'].map(tag => {
                     const palette = tag === 'all'
@@ -1046,7 +1087,7 @@ export default function PlannedVsActualPage() {
               </div>
             </div>
             <div style={{ fontSize: 11, color: '#64748b', marginBottom: 16 }}>
-              Planned vs actual line chart with markers ({chartView === 'D' ? 'Daily' : chartView === 'W' ? 'Weekly' : chartView === 'M' ? 'Monthly' : 'Overall'}{chartTag !== 'all' ? ` • ${chartTag}` : ''})
+              Planned vs actual {chartSeriesMode === 'bar' ? 'bar chart' : 'line chart with markers'} ({chartView === 'D' ? 'Daily' : chartView === 'W' ? 'Weekly' : chartView === 'M' ? 'Monthly' : 'Overall'}{chartTag !== 'all' ? ` • ${chartTag}` : ''})
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 14 }}>
               <div style={{ padding: '6px 10px', borderRadius: 999, border: '1px solid var(--border)', background: 'var(--bg-card)', fontSize: 11, color: '#94a3b8', fontWeight: 700 }}>
@@ -1080,44 +1121,85 @@ export default function PlannedVsActualPage() {
                   <YAxis yAxisId="right" orientation="right" tick={{ fill: '#64748b', fontSize: 10 }} axisLine={false} tickLine={false} />
                   <Tooltip content={<SCurveTooltip />} />
 
-                  <Line
-                    yAxisId="left"
-                    type="monotone"
-                    dataKey="planTotal"
-                    name="Plan"
-                    stroke="#cbd5e1"
-                    strokeWidth={3}
-                    dot={{ r: 6, stroke: '#cbd5e1', strokeWidth: 3, fill: 'var(--bg-card)' }}
-                    activeDot={{ r: 8, stroke: '#e2e8f0', strokeWidth: 3, fill: 'var(--bg-card)' }}
-                    connectNulls
-                  >
-                    <LabelList
-                      dataKey="planTotal"
-                      position="top"
-                      offset={10}
-                      formatter={(value) => (value ? value : '')}
-                      style={{ fill: '#cbd5e1', fontSize: 10, fontWeight: 700 }}
-                    />
-                  </Line>
-                  <Line
-                    yAxisId="left"
-                    type="monotone"
-                    dataKey="actualTotal"
-                    name="Actual"
-                    stroke={chartTag === 'all' ? '#22c55e' : TAG_COLORS[chartTag]?.dot || '#22c55e'}
-                    strokeWidth={3}
-                    dot={{ r: 6, stroke: chartTag === 'all' ? '#22c55e' : TAG_COLORS[chartTag]?.dot || '#22c55e', strokeWidth: 3, fill: 'var(--bg-card)' }}
-                    activeDot={{ r: 8, stroke: chartTag === 'all' ? '#4ade80' : TAG_COLORS[chartTag]?.text || '#4ade80', strokeWidth: 3, fill: 'var(--bg-card)' }}
-                    connectNulls
-                  >
-                    <LabelList
-                      dataKey="actualTotal"
-                      position="bottom"
-                      offset={10}
-                      formatter={(value) => (value ? value : '')}
-                      style={{ fill: chartTag === 'all' ? '#4ade80' : TAG_COLORS[chartTag]?.text || '#4ade80', fontSize: 10, fontWeight: 700 }}
-                    />
-                  </Line>
+                  {chartSeriesMode === 'bar' ? (
+                    <>
+                      <Bar
+                        yAxisId="left"
+                        dataKey="planTotal"
+                        name="Plan"
+                        fill="rgba(203,213,225,0.72)"
+                        stroke="#cbd5e1"
+                        radius={[8, 8, 0, 0]}
+                        maxBarSize={26}
+                      >
+                        <LabelList
+                          dataKey="planTotal"
+                          position="top"
+                          offset={8}
+                          formatter={(value) => (value ? value : '')}
+                          style={{ fill: '#cbd5e1', fontSize: 10, fontWeight: 700 }}
+                        />
+                      </Bar>
+                      <Bar
+                        yAxisId="left"
+                        dataKey="actualTotal"
+                        name="Actual"
+                        fill={actualSeriesColor}
+                        stroke={actualSeriesColor}
+                        radius={[8, 8, 0, 0]}
+                        maxBarSize={26}
+                      >
+                        <LabelList
+                          dataKey="actualTotal"
+                          position="top"
+                          offset={8}
+                          formatter={(value) => (value ? value : '')}
+                          style={{ fill: actualSeriesTextColor, fontSize: 10, fontWeight: 700 }}
+                        />
+                      </Bar>
+                    </>
+                  ) : (
+                    <>
+                      <Line
+                        yAxisId="left"
+                        type="monotone"
+                        dataKey="planTotal"
+                        name="Plan"
+                        stroke="#cbd5e1"
+                        strokeWidth={3}
+                        dot={{ r: 6, stroke: '#cbd5e1', strokeWidth: 3, fill: 'var(--bg-card)' }}
+                        activeDot={{ r: 8, stroke: '#e2e8f0', strokeWidth: 3, fill: 'var(--bg-card)' }}
+                        connectNulls
+                      >
+                        <LabelList
+                          dataKey="planTotal"
+                          position="top"
+                          offset={10}
+                          formatter={(value) => (value ? value : '')}
+                          style={{ fill: '#cbd5e1', fontSize: 10, fontWeight: 700 }}
+                        />
+                      </Line>
+                      <Line
+                        yAxisId="left"
+                        type="monotone"
+                        dataKey="actualTotal"
+                        name="Actual"
+                        stroke={actualSeriesColor}
+                        strokeWidth={3}
+                        dot={{ r: 6, stroke: actualSeriesColor, strokeWidth: 3, fill: 'var(--bg-card)' }}
+                        activeDot={{ r: 8, stroke: actualSeriesTextColor, strokeWidth: 3, fill: 'var(--bg-card)' }}
+                        connectNulls
+                      >
+                        <LabelList
+                          dataKey="actualTotal"
+                          position="bottom"
+                          offset={10}
+                          formatter={(value) => (value ? value : '')}
+                          style={{ fill: actualSeriesTextColor, fontSize: 10, fontWeight: 700 }}
+                        />
+                      </Line>
+                    </>
+                  )}
                   {showCumulative && (
                     <Line
                       yAxisId="right"
@@ -1154,8 +1236,8 @@ export default function PlannedVsActualPage() {
 
             <div style={{ marginTop: 12, fontSize: 11, color: '#334155', fontStyle: 'italic' }}>
               {planBaseline
-                ? `Plan uses "${planBaseline.fileName}" (${planBaseline.count} items) saved for this selected project. Column A is checklist name and column C is planned end date. Actual uses latest checklist status dates first with fallback for older rows.`
-                : 'Actual uses latest checklist status dates first with sparse fallback for older rows. Import a project plan to drive planned trend, overdue logic, and next-14-day items.'
+                ? `Plan uses "${planBaseline.fileName}" (${planBaseline.count} items) saved for this selected project. Column A is checklist name and column C is planned end date. Actual uses closed checklist completion dates first with updated-date fallback for older closed rows.`
+                : 'Actual uses closed checklist completion dates first with updated-date fallback for older closed rows. Import a project plan to drive planned trend, overdue logic, and next-14-day items.'
               }
             </div>
           </div>
