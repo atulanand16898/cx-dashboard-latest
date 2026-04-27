@@ -1,0 +1,2 @@
+# Notebook/runtime dependencies for the current XER lane.
+# The first production baseline parser currently uses only Python stdlib.

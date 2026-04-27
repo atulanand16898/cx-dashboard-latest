@@ -209,14 +209,18 @@ public class ChecklistStatusDateService extends BaseProjectService {
         record.setChecklistExternalId(checklist.getExternalId());
         record.setChecklistName(checklist.getName());
         record.setSourceChecklistSectionId(getAsText(sectionNode, "checklistsection_id", null));
-        record.setSourceStatusChangeRaw(getAsText(sectionNode, "status_change_date", null));
+        record.setSourceStatusChangeRaw(firstNonBlank(
+                getAsText(sectionNode, "date_closed", null),
+                getAsText(sectionNode, "status_change_date", null)));
         record.setSourceDateCreatedRaw(getAsText(sectionNode, "date_created", null));
         record.setSourcePayload(sectionNode.toString());
 
         String normalizedStatus = normalizeChecklistSectionStatus(getAsText(sectionNode, "status", null));
         record.setLastKnownStatus(normalizedStatus);
 
-        LocalDate statusChangeDate = parseDate(getAsText(sectionNode, "status_change_date", null));
+        LocalDate statusChangeDate = parseDate(firstNonBlank(
+                getAsText(sectionNode, "date_closed", null),
+                getAsText(sectionNode, "status_change_date", null)));
         if (statusChangeDate != null) {
             applyStatusDate(record, normalizedStatus, statusChangeDate);
         }
@@ -365,7 +369,7 @@ public class ChecklistStatusDateService extends BaseProjectService {
         return switch (lower) {
             case "not_started", "open", "new" -> "open";
             case "started", "in_progress", "inprogress", "active", "returned_with_comments" -> "in_progress";
-            case "finished", "complete", "completed", "approved", "checklist_approved", "closed", "passed", "signed_off" -> "finished";
+            case "finished", "complete", "completed", "approved", "checklist_approved", "closed", "passed", "signed_off", "tag_complete" -> "finished";
             default -> lower;
         };
     }

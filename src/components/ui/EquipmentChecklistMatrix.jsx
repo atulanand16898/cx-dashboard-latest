@@ -182,6 +182,10 @@ function EquipmentRow({ row, idx }) {
   const unassigned = !row.status || row.status === 'Not Assigned'
   const statusColor = fullyClosed ? C.approved : unassigned ? C.muted : C.progress
   const statusBg = fullyClosed ? 'rgba(34,197,94,0.12)' : unassigned ? 'rgba(100,116,139,0.18)' : 'rgba(234,179,8,0.12)'
+  const detailParts = [row.systemName, row.spaceName, row.assignedTo]
+    .map(value => String(value || '').trim())
+    .filter(Boolean)
+  const uniqueDetailParts = detailParts.filter((value, index) => detailParts.indexOf(value) === index)
 
   return (
     <tr
@@ -199,7 +203,9 @@ function EquipmentRow({ row, idx }) {
             <span style={{ padding: '1px 7px', borderRadius: 999, background: statusBg, color: statusColor, fontWeight: 600 }}>
               {row.status || 'Not Assigned'}
             </span>
-            <span style={{ marginLeft: 6 }}>| {row.assignedTo || 'Unassigned'}</span>
+            {uniqueDetailParts.length > 0 && (
+              <span style={{ marginLeft: 6 }}>{uniqueDetailParts.join(' • ')}</span>
+            )}
           </div>
           <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
             {row.checklistTotal > 0 && (
@@ -363,6 +369,8 @@ export default function EquipmentChecklistMatrix({
         row.externalId,
         groupNameForRow(row),
         row.systemName,
+        row.spaceName,
+        row.assignedTo,
       ].filter(Boolean).join(' ').toLowerCase()
 
       if (query && !haystack.includes(query)) return false

@@ -72,7 +72,7 @@ export default function LandingPage() {
     <div className="modum-public-page">
       <header className="modum-public-nav">
         <Link to="/" className="modum-public-nav__brand">
-          <ModumLogo label="MODUM" sublabel="Field Decisions. Powered by Data." size="md" />
+          <ModumLogo label="MODUM" sublabel="Data-Driven Delivery" size="md" />
         </Link>
 
         <div className="modum-public-nav__links">
@@ -92,7 +92,7 @@ export default function LandingPage() {
             <div className="modum-public-hero__brand">
               <ModumLogo
                 label="MODUM"
-                sublabel="Field Decisions. Powered by Data."
+                sublabel="Data-Driven Delivery"
                 size="hero"
                 layout="stack"
               />
@@ -106,7 +106,7 @@ export default function LandingPage() {
             </h1>
 
             <p className="modum-public-hero__subtitle">
-              Dubai headquartered. Built for mission critical delivery, technical oversight, and connected regional support.
+              Built for mission critical delivery, technical oversight, and connected regional support.
             </p>
           </div>
         </div>

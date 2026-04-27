@@ -3,9 +3,9 @@ import modumBrandBoard from '../../assets/modum-brand-board.jpeg'
 
 export default function ModumBrand({
   variant = 'hero',
-  eyebrow = 'Field Decisions. Powered by Data.',
+  eyebrow = 'Data-Driven Delivery.',
   title = 'MODUM IQ',
-  subtitle = 'Data-Driven Delivery Decisions',
+  subtitle = 'Data-Driven Delivery',
 }) {
   const compact = variant === 'compact'
 

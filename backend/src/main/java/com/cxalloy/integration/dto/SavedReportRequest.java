@@ -27,6 +27,8 @@ public class SavedReportRequest {
     private String shiftWindow;
     private String reportAuthor;
     private String peopleOnSite;
+    private String logoLeft;
+    private String logoRight;
 
     public String getProjectId() { return projectId; }
     public void setProjectId(String projectId) { this.projectId = projectId; }
@@ -70,4 +72,8 @@ public class SavedReportRequest {
     public void setReportAuthor(String reportAuthor) { this.reportAuthor = reportAuthor; }
     public String getPeopleOnSite() { return peopleOnSite; }
     public void setPeopleOnSite(String peopleOnSite) { this.peopleOnSite = peopleOnSite; }
+    public String getLogoLeft() { return logoLeft; }
+    public void setLogoLeft(String logoLeft) { this.logoLeft = logoLeft; }
+    public String getLogoRight() { return logoRight; }
+    public void setLogoRight(String logoRight) { this.logoRight = logoRight; }
 }

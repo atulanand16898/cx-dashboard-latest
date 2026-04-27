@@ -44,7 +44,7 @@ export default function LoginPage() {
     setLoading(true)
     try {
       await login(cleanUsername, cleanPassword, selectedSource.key)
-      navigate('/tracker-pulse')
+      navigate(selectedSource.key === 'primavera' ? '/reports' : '/tracker-pulse')
       toast.success('Welcome back!')
     } catch (error) {
       toast.error(error.response?.data?.message || error.message || 'Invalid credentials')

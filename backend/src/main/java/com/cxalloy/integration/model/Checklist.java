@@ -80,7 +80,12 @@ public class Checklist {
     public String getDueDate() { return dueDate; } public void setDueDate(String v) { this.dueDate = v; }
     public String getCompletedDate() { return completedDate; } public void setCompletedDate(String v) { this.completedDate = v; }
     @Transient
-    public String getActualFinishDate() { return completedDate; }
+    public String getActualFinishDate() {
+        if (completedDate != null && !completedDate.isBlank()) {
+            return completedDate;
+        }
+        return latestFinishedDate != null ? latestFinishedDate.toString() : null;
+    }
     public void setActualFinishDate(String v) { this.completedDate = v; }
     public String getCreatedAt() { return createdAt; } public void setCreatedAt(String v) { this.createdAt = v; }
     public String getUpdatedAt() { return updatedAt; } public void setUpdatedAt(String v) { this.updatedAt = v; }

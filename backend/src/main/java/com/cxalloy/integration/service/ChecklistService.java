@@ -71,6 +71,8 @@ public class ChecklistService extends BaseProjectService {
         ApiSyncLog log = startLog("/checklist", "GET");
         int totalSynced = 0;
         int page = 1;
+        boolean parsedAnyPayload = false;
+        java.util.Set<String> syncedExternalIds = new java.util.LinkedHashSet<>();
 
         try {
             logger.info("Fetching checklists for project_id={} — all pages via POST /checklist", pid);
@@ -104,7 +106,8 @@ public class ChecklistService extends BaseProjectService {
                 }
 
                 saveRaw("/checklist?page=" + page, "checklists_list_p" + page, pid, raw);
-                int count = parseAndSave(raw, pid);
+                int count = parseAndSave(raw, pid, syncedExternalIds);
+                parsedAnyPayload = true;
                 totalSynced += count;
 
                 logger.info("Page {}: synced {} checklists (running total: {})", page, count, totalSynced);
@@ -127,6 +130,11 @@ public class ChecklistService extends BaseProjectService {
             int duplicatesRemoved = cleanupCurrentProviderDuplicates(pid);
             if (duplicatesRemoved > 0) {
                 logger.info("Removed {} duplicate checklist rows for project {}", duplicatesRemoved, pid);
+            }
+
+            int staleRemoved = parsedAnyPayload ? pruneMissingCurrentProviderRows(pid, syncedExternalIds) : 0;
+            if (staleRemoved > 0) {
+                logger.info("Removed {} stale checklist rows for project {}", staleRemoved, pid);
             }
 
             long dur = System.currentTimeMillis() - start;
@@ -226,6 +234,10 @@ public class ChecklistService extends BaseProjectService {
                 checklist.setLatestOpenDate(row.getLatestOpenDate());
                 checklist.setLatestInProgressDate(row.getLatestInProgressDate());
                 checklist.setLatestFinishedDate(row.getLatestFinishedDate());
+                if ((checklist.getCompletedDate() == null || checklist.getCompletedDate().isBlank())
+                        && row.getLatestFinishedDate() != null) {
+                    checklist.setCompletedDate(row.getLatestFinishedDate().toString());
+                }
             }
         });
         return list;
@@ -353,7 +365,7 @@ public class ChecklistService extends BaseProjectService {
         return derived.equals("white") ? null : derived;
     }
 
-    private int parseAndSave(String json, String pid) throws Exception {
+    private int parseAndSave(String json, String pid, java.util.Set<String> syncedExternalIds) throws Exception {
         if (json == null || json.isBlank()) {
             logger.warn("Empty response for /checklist project={}", pid);
             return 0;
@@ -363,9 +375,32 @@ public class ChecklistService extends BaseProjectService {
         List<Checklist> list = new ArrayList<>();
         if (data.isArray()) { for (JsonNode n : data) list.add(map(n, pid)); }
         else if (data.isObject()) list.add(map(data, pid));
+        list.stream()
+                .map(Checklist::getExternalId)
+                .filter(StringUtils::hasText)
+                .forEach(syncedExternalIds::add);
         list.forEach(this::upsert);
         logger.debug("Parsed and saved {} checklists for project {}", list.size(), pid);
         return list.size();
+    }
+
+    private int pruneMissingCurrentProviderRows(String projectId, java.util.Set<String> syncedExternalIds) {
+        List<Checklist> currentRows = checklistRepository.findByProjectId(projectId).stream()
+                .filter(checklist -> providerContextService.matchesCurrentProvider(checklist.getProvider()))
+                .toList();
+        if (currentRows.isEmpty()) {
+            return 0;
+        }
+
+        List<Checklist> staleRows = currentRows.stream()
+                .filter(checklist -> !syncedExternalIds.contains(checklist.getExternalId()))
+                .toList();
+        if (staleRows.isEmpty()) {
+            return 0;
+        }
+
+        checklistRepository.deleteAllInBatch(staleRows);
+        return staleRows.size();
     }
 
     private Checklist map(JsonNode n, String pid) {

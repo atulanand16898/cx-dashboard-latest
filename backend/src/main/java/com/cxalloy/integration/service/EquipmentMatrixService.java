@@ -95,7 +95,7 @@ public class EquipmentMatrixService {
         for (Equipment equipment : equipmentList) {
             List<Checklist> equipmentChecklists = resolveEquipmentChecklists(
                     equipment, checklistsByAssetId, checklistsByAssetName, checklistsByPrefix);
-            Map<String, List<Checklist>> byLevel = splitChecklistsByLevel(equipmentChecklists);
+            Map<String, List<Checklist>> byTag = splitChecklistsByTag(equipmentChecklists);
             List<Issue> equipmentIssues = resolveEquipmentIssues(
                     equipment, equipmentChecklists, issuesByAssetId, issuesByAssetName, issuesByChecklistId);
             TestCounts testCounts = resolveTestCounts(equipment);
@@ -108,13 +108,14 @@ public class EquipmentMatrixService {
             row.setDescription(equipment.getDescription());
             row.setStatus(resolveEquipmentStatus(equipment.getStatus()));
             row.setSystemName(resolveSystemDisplayName(equipment));
-            row.setAssignedTo(resolveAssignedTo(equipmentChecklists));
+            row.setAssignedTo(resolveAssignedTo(equipment, equipmentChecklists));
+            row.setSpaceName(resolveEquipmentSpaceName(equipment));
             row.setEquipmentType(equipment.getEquipmentType());
             row.setDiscipline(equipment.getDiscipline());
 
-            row.setL1Checklist(buildChecklistStat(byLevel.getOrDefault("L1", Collections.emptyList()), issuesByChecklistId));
-            row.setL2Checklist(buildChecklistStat(byLevel.getOrDefault("L2", Collections.emptyList()), issuesByChecklistId));
-            row.setL3Checklist(buildChecklistStat(byLevel.getOrDefault("L3", Collections.emptyList()), issuesByChecklistId));
+            row.setL1Checklist(buildChecklistStat(byTag.getOrDefault("red", Collections.emptyList()), issuesByChecklistId));
+            row.setL2Checklist(buildChecklistStat(byTag.getOrDefault("yellow", Collections.emptyList()), issuesByChecklistId));
+            row.setL3Checklist(buildChecklistStat(byTag.getOrDefault("green", Collections.emptyList()), issuesByChecklistId));
 
             int checklistTotal = equipmentChecklists.size();
             int checklistClosed = (int) equipmentChecklists.stream().filter(this::isChecklistClosed).count();
@@ -155,18 +156,18 @@ public class EquipmentMatrixService {
         return dto;
     }
 
-    private Map<String, List<Checklist>> splitChecklistsByLevel(List<Checklist> equipmentChecklists) {
-        Map<String, List<Checklist>> byLevel = new LinkedHashMap<>();
-        byLevel.put("L1", new ArrayList<>());
-        byLevel.put("L2", new ArrayList<>());
-        byLevel.put("L3", new ArrayList<>());
+    private Map<String, List<Checklist>> splitChecklistsByTag(List<Checklist> equipmentChecklists) {
+        Map<String, List<Checklist>> byTag = new LinkedHashMap<>();
+        byTag.put("red", new ArrayList<>());
+        byTag.put("yellow", new ArrayList<>());
+        byTag.put("green", new ArrayList<>());
         for (Checklist checklist : equipmentChecklists) {
-            String level = resolveChecklistLevel(checklist);
-            if (level != null) {
-                byLevel.computeIfAbsent(level, ignored -> new ArrayList<>()).add(checklist);
+            String tag = resolveChecklistMatrixTag(checklist);
+            if (tag != null) {
+                byTag.computeIfAbsent(tag, ignored -> new ArrayList<>()).add(checklist);
             }
         }
-        return byLevel;
+        return byTag;
     }
 
     private List<Checklist> resolveEquipmentChecklists(
@@ -251,6 +252,7 @@ public class EquipmentMatrixService {
         if (status == null) return false;
         String normalized = status.toLowerCase(Locale.ROOT);
         return normalized.equals("checklist_approved")
+                || normalized.equals("tag_complete")
                 || normalized.equals("complete")
                 || normalized.equals("completed")
                 || normalized.equals("finished")
@@ -271,26 +273,33 @@ public class EquipmentMatrixService {
                 || normalized.equals("done");
     }
 
-    private String resolveChecklistLevel(Checklist checklist) {
+    private String resolveChecklistMatrixTag(Checklist checklist) {
         String[] candidates = {
+                blankToNull(checklist.getTagLevel()),
                 blankToNull(checklist.getName()),
                 blankToNull(checklist.getChecklistType()),
                 extractTextFromRaw(checklist.getRawJson(), "type_name"),
-                extractTextFromRaw(checklist.getRawJson(), "checklist_type")
+                extractTextFromRaw(checklist.getRawJson(), "checklist_type"),
+                extractTextFromRaw(checklist.getRawJson(), "name")
         };
         for (String candidate : candidates) {
-            String level = matchLevel(candidate);
-            if (level != null) return level;
+            String tag = matchMatrixTag(candidate);
+            if (tag != null) return tag;
         }
         return null;
     }
 
-    private String matchLevel(String value) {
+    private String matchMatrixTag(String value) {
         if (value == null) return null;
-        String upper = value.toUpperCase(Locale.ROOT);
-        if (upper.matches(".*\\bL1\\b.*") || upper.contains("LEVEL-1") || upper.contains("LEVEL 1")) return "L1";
-        if (upper.matches(".*\\bL2\\b.*") || upper.contains("LEVEL-2") || upper.contains("LEVEL 2")) return "L2";
-        if (upper.matches(".*\\bL3\\b.*") || upper.contains("LEVEL-3") || upper.contains("LEVEL 3")) return "L3";
+        String lower = value.toLowerCase(Locale.ROOT).trim();
+        if (lower.matches(".*\\bl2[-_\\s]?a\\b.*") || lower.matches(".*\\blevel[-_\\s]?2[-_\\s]?a\\b.*")) return "red";
+        if (lower.matches(".*\\bl2[-_\\s]?b\\b.*") || lower.matches(".*\\blevel[-_\\s]?2[-_\\s]?b\\b.*")) return "yellow";
+        if (lower.matches(".*\\bl1\\b.*") || lower.contains("level-1") || lower.contains("level 1")) return "red";
+        if (lower.matches(".*\\bl2\\b.*") || lower.contains("level-2") || lower.contains("level 2")) return "yellow";
+        if (lower.matches(".*\\bl3\\b.*") || lower.contains("level-3") || lower.contains("level 3")) return "green";
+        if ("red".equals(lower) || lower.matches(".*\\bred\\b.*")) return "red";
+        if ("yellow".equals(lower) || lower.matches(".*\\byellow\\b.*")) return "yellow";
+        if ("green".equals(lower) || lower.matches(".*\\bgreen\\b.*")) return "green";
         return null;
     }
 
@@ -313,14 +322,24 @@ public class EquipmentMatrixService {
         return firstNonBlank(systemName, equipmentType, equipment.getDiscipline(), equipment.getBuildingId(), "General");
     }
 
-    private String resolveAssignedTo(List<Checklist> equipmentChecklists) {
+    private String resolveAssignedTo(Equipment equipment, List<Checklist> equipmentChecklists) {
         for (Checklist checklist : equipmentChecklists) {
             String assignedTo = blankToNull(checklist.getAssignedTo());
             if (assignedTo != null) return assignedTo;
             String assignedName = extractTextFromRaw(checklist.getRawJson(), "assigned_name");
             if (assignedName != null) return assignedName;
         }
-        return null;
+        return firstNonBlank(
+                extractTextFromRaw(equipment.getRawJson(), "assigned_name"),
+                extractTextFromRaw(equipment.getRawJson(), "space"),
+                blankToNull(equipment.getSpaceId()),
+                blankToNull(equipment.getSystemName()));
+    }
+
+    private String resolveEquipmentSpaceName(Equipment equipment) {
+        return firstNonBlank(
+                extractTextFromRaw(equipment.getRawJson(), "space"),
+                blankToNull(equipment.getSpaceId()));
     }
 
     private TestCounts resolveTestCounts(Equipment equipment) {

@@ -26,8 +26,8 @@ services:
 
   backend:
     build:
-      context: ./backend
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: backend/Dockerfile
     restart: unless-stopped
     depends_on:
       postgres:
@@ -47,10 +47,14 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       OPENAI_DEFAULT_MODEL: ${OPENAI_DEFAULT_MODEL:-gpt-5.4}
       APP_FILES_STORAGE_DIR: ${APP_FILES_STORAGE_DIR:-/tmp/project-files}
+      XER_PROCESSING_STORAGE_DIR: ${XER_PROCESSING_STORAGE_DIR:-/tmp/xer-processing}
+      XER_PROCESSING_PYTHON_COMMAND: ${XER_PROCESSING_PYTHON_COMMAND:-python3}
+      XER_PROCESSING_PROCESSOR_SCRIPT: ${XER_PROCESSING_PROCESSOR_SCRIPT:-/app/xer_processing/python/process_baseline.py}
       APP_LOG_LEVEL: ${APP_LOG_LEVEL:-INFO}
       JAVA_TOOL_OPTIONS: ${JAVA_TOOL_OPTIONS:--XX:MaxRAM=384m -XX:InitialRAMPercentage=20 -XX:+UseSerialGC}
     volumes:
       - project_files_data:/tmp/project-files
+      - xer_processing_data:/tmp/xer-processing
     expose:
       - "8081"
     logging:
@@ -94,5 +98,6 @@ services:
 volumes:
   postgres_data:
   project_files_data:
+  xer_processing_data:
   caddy_data:
   caddy_config:

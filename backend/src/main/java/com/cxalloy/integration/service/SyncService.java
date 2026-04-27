@@ -112,14 +112,16 @@ public class SyncService {
         SyncJobState job = new SyncJobState();
         currentJob = job;
 
-        syncExecutor.submit(() -> {
+        Thread coordinator = new Thread(() -> {
             try {
                 runFullSyncInternal(job);
             } finally {
                 syncRunning.set(false);
                 job.markComplete();
             }
-        });
+        }, "full-sync-coordinator");
+        coordinator.setDaemon(true);
+        coordinator.start();
 
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("jobStarted", true);
@@ -211,7 +213,15 @@ public class SyncService {
         // Max concurrent HTTP calls: 5 projects × 7 endpoints = 35 — safe and predictable.
         int batchSize = 5;
 
-        for (int i = 0; i < validProjects.size(); i += batchSize) {
+        ExecutorService projectBatchExecutor = Executors.newFixedThreadPool(batchSize, r -> {
+            Thread t = new Thread(r);
+            t.setName("sync-project-batch-" + t.getId());
+            t.setDaemon(true);
+            return t;
+        });
+
+        try {
+            for (int i = 0; i < validProjects.size(); i += batchSize) {
             int end = Math.min(i + batchSize, validProjects.size());
             List<Project> batch = validProjects.subList(i, end);
 
@@ -223,7 +233,7 @@ public class SyncService {
             List<CompletableFuture<Map<String, Object>>> futures = batch.stream()
                 .map(p -> CompletableFuture.supplyAsync(
                     () -> syncProjectInternal(p.getExternalId(), p.getName(), job),
-                    syncExecutor))
+                    projectBatchExecutor))
                 .collect(Collectors.toList());
 
             for (CompletableFuture<Map<String, Object>> f : futures) {
@@ -251,6 +261,9 @@ public class SyncService {
                     break;
                 }
             }
+        }
+        } finally {
+            projectBatchExecutor.shutdownNow();
         }
 
         long wallMs = System.currentTimeMillis() - wallStart;

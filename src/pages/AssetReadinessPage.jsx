@@ -3,12 +3,13 @@ import { AlertTriangle, ChevronDown, ChevronRight, Download, ExternalLink, Grid2
 import { useProject } from '../context/ProjectContext'
 import { checklistsApi, equipmentApi, issuesApi } from '../services/api'
 import EquipmentChecklistMatrix from '../components/ui/EquipmentChecklistMatrix'
+import { CHECKLIST_DONE_STATUSES, isChecklistDone } from '../utils/checklistStatusUtils'
+import { deriveChecklistTag } from '../utils/checklistTagUtils'
 
 const LEVELS = [
-  { key: 'L1', label: 'L1', color: '#ef4444', headerBackground: 'rgba(239, 68, 68, 0.18)' },
-  { key: 'L2', label: 'L2', color: '#facc15', headerBackground: 'rgba(250, 204, 21, 0.16)' },
-  { key: 'L3', label: 'L3', color: '#22c55e', headerBackground: 'rgba(34, 197, 94, 0.16)' },
-  { key: 'L4', label: 'L4', color: '#3b82f6', headerBackground: 'rgba(59, 130, 246, 0.16)' },
+  { key: 'red', label: 'Red', color: '#ef4444', headerBackground: 'rgba(239, 68, 68, 0.18)' },
+  { key: 'yellow', label: 'Yellow', color: '#facc15', headerBackground: 'rgba(250, 204, 21, 0.16)' },
+  { key: 'green', label: 'Green', color: '#22c55e', headerBackground: 'rgba(34, 197, 94, 0.16)' },
 ]
 
 const SUB_TABS = [
@@ -16,7 +17,6 @@ const SUB_TABS = [
   { key: 'matrix', label: 'Equipment Matrix', icon: Grid2X2 },
 ]
 
-const COMPLETE_STATUSES = new Set(['finished', 'complete', 'completed', 'done', 'closed', 'signed_off', 'approved', 'passed'])
 const CLOSED_ISSUE_STATUSES = new Set(['issue_closed', 'closed', 'accepted_by_owner', 'done', 'resolved', 'completed'])
 
 function normalizeText(value) {
@@ -36,16 +36,12 @@ function getEquipmentLabel(equipment) {
 }
 
 function getChecklistLevel(checklist) {
-  const source = [checklist.tagLevel, checklist.checklistType, checklist.name].map(normalizeText).join(' ')
-  if (source.includes('red') || source.includes('l1') || source.includes('level-1') || source.includes('level 1')) return 'L1'
-  if (source.includes('yellow') || source.includes('l2') || source.includes('level-2') || source.includes('level 2')) return 'L2'
-  if (source.includes('green') || source.includes('l3') || source.includes('level-3') || source.includes('level 3')) return 'L3'
-  if (source.includes('blue') || source.includes('l4') || source.includes('level-4') || source.includes('level 4')) return 'L4'
-  return null
+  const tag = deriveChecklistTag(checklist)
+  return ['red', 'yellow', 'green'].includes(tag) ? tag : null
 }
 
 function isChecklistClosed(checklist) {
-  return COMPLETE_STATUSES.has(normalizeText(checklist.status).replace(/\s+/g, '_'))
+  return isChecklistDone(checklist.status)
 }
 
 function createEmptyLevelMap() {
@@ -223,7 +219,7 @@ function getCellStyle(percent, level) {
   if (percent > 0) {
     return {
       background: 'rgba(250, 204, 21, 0.16)',
-      color: level.key === 'L4' ? '#dbeafe' : '#fde68a',
+      color: '#fde68a',
       border: 'rgba(250, 204, 21, 0.2)',
     }
   }
@@ -461,7 +457,7 @@ function tableCellStyle(minWidth, strong = false, footer = false) {
 
 function isChecklistInactive(checklist) {
   const normalized = normalizeText(checklist.status).replace(/\s+/g, '_').replace(/-/g, '_')
-  if (COMPLETE_STATUSES.has(normalized) || normalized === 'cancelled' || normalized === 'canceled') return false
+  if (CHECKLIST_DONE_STATUSES.has(normalized) || normalized === 'cancelled' || normalized === 'canceled') return false
   const updated = new Date(checklist.updatedAt || checklist.createdAt || 0)
   if (isNaN(updated)) return false
   return ((Date.now() - updated.getTime()) / 86400000) >= 14

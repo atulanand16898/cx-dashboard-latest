@@ -3,6 +3,7 @@ import { Plus, Search, Filter, RefreshCw, Trash2, Edit2, X, ExternalLink, Chevro
 import { issuesApi } from '../services/api'
 import { useProject } from '../context/ProjectContext'
 import { Table, StatusBadge, PriorityBadge, Modal, SyncResultCard, EmptyState, Skeleton, DetailGrid } from '../components/ui'
+import { useLocation } from 'react-router-dom'
 import toast from 'react-hot-toast'
 import { AlertCircle } from 'lucide-react'
 
@@ -20,8 +21,45 @@ function fmtDate(v) {
   }
 }
 
+function normalizeIssueStatus(status) {
+  switch ((status || '').toLowerCase().trim()) {
+    case 'open':
+    case 'issue_opened':
+    case 'active':
+    case 'new':
+      return 'issue_opened'
+    case 'correction_in_progress':
+    case 'in_progress':
+    case 'started':
+      return 'correction_in_progress'
+    case 'gc_to_verify':
+    case 'gc_verify':
+      return 'gc_to_verify'
+    case 'ready_for_retest':
+    case 'ready_for_verification':
+    case 'cxa_to_verify':
+    case 'cxa_verify':
+      return 'cxa_to_verify'
+    case 'issue_closed':
+    case 'closed':
+    case 'done':
+    case 'resolved':
+    case 'completed':
+      return 'issue_closed'
+    case 'accepted_by_owner':
+    case 'accepted':
+      return 'accepted_by_owner'
+    case 'recommendation':
+    case 'additional_information_needed':
+      return 'recommendation'
+    default:
+      return 'issue_opened'
+  }
+}
+
 export default function IssuesPage() {
   const { activeProject } = useProject()
+  const location = useLocation()
   const [issues, setIssues] = useState([])
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
@@ -45,6 +83,16 @@ export default function IssuesPage() {
 
   useEffect(() => { load() }, [activeProject])
   useEffect(() => { setVisibleCount(PAGE_SIZE) }, [search, statusFilter, activeProject])
+  useEffect(() => {
+    const preset = location.state?.listPreset
+    if (preset?.entityType === 'issues') {
+      setSearch(preset.search || '')
+      setStatusFilter(preset.filters?.status || 'all')
+    } else {
+      setSearch('')
+      setStatusFilter('all')
+    }
+  }, [activeProject, location.key, location.state])
 
   const openCreate = () => { setForm(defaultForm); setEditIssue(null); setModalOpen(true) }
   const openEdit = (issue) => {
@@ -97,18 +145,14 @@ export default function IssuesPage() {
     finally { setSyncing(false) }
   }
 
-  const CLOSED_STATUSES = ['issue_closed', 'accepted_by_owner', 'closed', 'done', 'resolved', 'completed']
-  const OPEN_STATUSES   = ['open', 'issue_opened', 'correction_in_progress', 'in_progress', 'active']
-  const REVIEW_STATUSES = ['gc_to_verify', 'cxa_to_verify', 'ready_for_retest', 'additional_information_needed']
+  const CLOSED_STATUSES = ['issue_closed', 'accepted_by_owner']
+  const ACTIVE_STATUSES = ['issue_opened', 'correction_in_progress', 'gc_to_verify', 'cxa_to_verify']
 
   const filtered = issues.filter(i => {
     const matchSearch = !search || (i.title || '').toLowerCase().includes(search.toLowerCase())
-    const s = (i.status || '').toLowerCase()
+    const s = normalizeIssueStatus(i.status)
     let matchStatus = true
-    if (statusFilter === 'open')   matchStatus = OPEN_STATUSES.includes(s)
-    else if (statusFilter === 'closed') matchStatus = CLOSED_STATUSES.includes(s)
-    else if (statusFilter === 'in_review') matchStatus = REVIEW_STATUSES.includes(s)
-    else if (statusFilter !== 'all') matchStatus = s === statusFilter
+    if (statusFilter !== 'all') matchStatus = s === statusFilter
     return matchSearch && matchStatus
   })
 
@@ -187,15 +231,13 @@ export default function IssuesPage() {
           className="input-field w-auto"
         >
           <option value="all">All Status</option>
-          <option value="open">Open / Active</option>
-          <option value="in_review">Pending Review</option>
-          <option value="closed">Closed / Accepted</option>
+          <option value="issue_opened">Issue Opened</option>
+          <option value="correction_in_progress">Correction in Progress</option>
+          <option value="gc_to_verify">GC to Verify</option>
+          <option value="cxa_to_verify">CxA to verify</option>
           <option value="issue_closed">Issue Closed</option>
-          <option value="accepted_by_owner">Accepted By Owner</option>
-          <option value="correction_in_progress">Correction In Progress</option>
-          <option value="gc_to_verify">GC To Verify</option>
-          <option value="cxa_to_verify">CXA To Verify</option>
-          <option value="ready_for_retest">Ready For Retest</option>
+          <option value="accepted_by_owner">Accepted by Owner</option>
+          <option value="recommendation">Recommendation</option>
         </select>
 
         <button onClick={handleSync} disabled={syncing} className="btn-secondary">
@@ -218,9 +260,9 @@ export default function IssuesPage() {
       <div className="grid grid-cols-4 gap-3">
         {[
           { label: 'Total', value: issues.length, cls: 'text-white' },
-          { label: 'Open / Active', value: issues.filter(i => OPEN_STATUSES.includes((i.status || '').toLowerCase())).length, cls: 'text-yellow-400' },
-          { label: 'Closed', value: issues.filter(i => CLOSED_STATUSES.includes((i.status || '').toLowerCase())).length, cls: 'text-green-400' },
-          { label: 'Pending Review', value: issues.filter(i => REVIEW_STATUSES.includes((i.status || '').toLowerCase())).length, cls: 'text-sky-400' },
+          { label: 'Active Workflow', value: issues.filter(i => ACTIVE_STATUSES.includes(normalizeIssueStatus(i.status))).length, cls: 'text-yellow-400' },
+          { label: 'Closed / Accepted', value: issues.filter(i => CLOSED_STATUSES.includes(normalizeIssueStatus(i.status))).length, cls: 'text-green-400' },
+          { label: 'Recommendation', value: issues.filter(i => normalizeIssueStatus(i.status) === 'recommendation').length, cls: 'text-sky-400' },
         ].map(s => (
           <div key={s.label} className="glass-card-light p-4 text-center">
             <div className={`text-2xl font-800 ${s.cls}`}>{s.value}</div>

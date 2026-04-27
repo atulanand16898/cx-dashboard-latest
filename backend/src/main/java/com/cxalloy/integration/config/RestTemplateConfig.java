@@ -83,4 +83,14 @@ public class RestTemplateConfig {
             return t;
         });
     }
+
+    @Bean(name = "xerProcessingExecutor")
+    public ExecutorService xerProcessingExecutor() {
+        return Executors.newFixedThreadPool(2, r -> {
+            Thread t = new Thread(r);
+            t.setName("xer-processing-worker-" + t.getId());
+            t.setDaemon(false);
+            return t;
+        });
+    }
 }

@@ -40,6 +40,20 @@ function fmtDate(v) {
   } catch { return v }
 }
 
+function normalizeChecklistStatus(status) {
+  const normalized = String(status || '').toLowerCase().trim().replace(/[\s-]+/g, '_')
+  if (normalized.includes('cxa') && normalized.includes('review')) return 'ready_for_cxa_review'
+  return normalized
+}
+
+function formatChecklistStatusLabel(status) {
+  const normalized = normalizeChecklistStatus(status)
+  if (normalized === 'ready_for_cxa_review') return 'Ready for CxA Review'
+  return normalized
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, (char) => char.toUpperCase())
+}
+
 export function ChecklistsPage() {
   const { activeProject } = useProject()
   return (
@@ -53,7 +67,7 @@ export function ChecklistsPage() {
       emptyDesc="Sync to pull checklists from CxAlloy"
       searchKeys={['name', 'externalId', 'status', 'checklistType']}
       filterConfigs={[
-        { key: 'status', label: 'All Statuses', getValue: item => item.status || '' },
+        { key: 'status', label: 'All Statuses', getValue: item => normalizeChecklistStatus(item.status || ''), formatOptionLabel: formatChecklistStatusLabel },
         { key: 'tagLevel', label: 'All Tags', getValue: item => item.tagLevel || '' },
         { key: 'checklistType', label: 'All Types', getValue: item => item.checklistType || '' },
       ]}

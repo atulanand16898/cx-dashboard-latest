@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useCallback, useEffect, useRef } from 'react'
-import { projectsApi } from '../services/api'
+import { projectsApi, xerProcessingApi } from '../services/api'
 import { useAuth } from './AuthContext'
 
 const ProjectContext = createContext(null)
@@ -34,7 +34,9 @@ export function ProjectProvider({ children }) {
     const requestId = ++fetchRequestRef.current
     setLoading(true)
     try {
-      const res = await projectsApi.getAll()
+      const res = provider === 'primavera'
+        ? await xerProcessingApi.listProjects()
+        : await projectsApi.getAll()
       if (requestId !== fetchRequestRef.current) return
       const list = res.data.data || []
       const previousActive = activeProjectRef.current
@@ -52,7 +54,7 @@ export function ProjectProvider({ children }) {
 
       setSelectedProjects(() => {
         const filtered = previousSelected.filter(selected => list.some(project => project.id === selected.id))
-        if (filtered.length > 0) return filtered
+        if (filtered.length > 0) return [filtered[0]]
         return stillActive ? [previousActive] : [list[0]]
       })
     } finally {
@@ -60,7 +62,7 @@ export function ProjectProvider({ children }) {
         setLoading(false)
       }
     }
-  }, [clearProjects])
+  }, [clearProjects, provider])
 
   useEffect(() => {
     fetchRequestRef.current += 1
@@ -76,13 +78,8 @@ export function ProjectProvider({ children }) {
   }, [clearProjects, fetchProjects, isAuthenticated, provider])
 
   const toggleProject = useCallback((project) => {
-    setSelectedProjects(prev => {
-      const isSelected = prev.some(p => p.id === project.id)
-      const next = isSelected ? prev.filter(p => p.id !== project.id) : [...prev, project]
-      if (!isSelected) setActiveProject(project)
-      else if (next.length > 0) setActiveProject(next[next.length - 1])
-      return next
-    })
+    setActiveProject(project)
+    setSelectedProjects(project ? [project] : [])
   }, [])
 
   const clearSelection = useCallback(() => {

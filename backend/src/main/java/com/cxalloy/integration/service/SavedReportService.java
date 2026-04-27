@@ -60,7 +60,11 @@ public class SavedReportService {
     );
 
     private static final Set<String> CLOSED_CHECKLIST_STATUSES = Set.of(
-            "finished", "complete", "completed", "done", "closed", "checklist_approved", "approved", "signed_off"
+            "finished", "complete", "completed", "done", "closed", "checklist_approved", "approved", "signed_off", "tag_complete"
+    );
+
+    private static final Set<String> IN_PROGRESS_CHECKLIST_STATUSES = Set.of(
+            "in_progress", "correction_in_progress", "additional_information_needed", "started", "active"
     );
 
     private static final List<DateTimeFormatter> DATE_FORMATTERS = List.of(
@@ -420,22 +424,38 @@ public class SavedReportService {
                             "openDays", checklistOpenDays(checklist)
                     ))
                     .toList();
-            sectionData.put("checklists", Map.of(
-                    "byTag", byTag,
-                    "byStatus", byStatus,
-                    "progressByCategory", checklistProgressByTag(checklists),
-                    "completionByCategory", completionByCategory,
-                    "openByCategory", completionByCategory.stream().collect(Collectors.toMap(
-                            row -> stringValue(row.get("category")),
-                            row -> longValue(row.get("total")) - longValue(row.get("closed")),
-                            (left, right) -> left,
-                            LinkedHashMap::new
-                    )),
-                    "weekOverWeek", weekOverWeek,
-                    "outlierRows", buildChecklistOutlierRows(checklists),
-                    "rows", checklistRows,
-                    "totalRows", checklists.size()
-            ));
+            long inProgressCount = checklists.stream().filter(this::isInProgressChecklist).count();
+            long cxaToVerifyCount = checklists.stream().filter(this::isCxaToVerifyChecklist).count();
+            List<Map<String, Object>> cxaRows = checklists.stream()
+                    .filter(this::isCxaToVerifyChecklist)
+                    .sorted(Comparator.comparing(c -> defaultLabel(c.getTagLevel(), "zzz")))
+                    .map(c -> row(
+                            "name", valueOrEmpty(c.getName()),
+                            "category", firstNonBlank(tagDisplayLabel(defaultLabel(c.getTagLevel(), "")), defaultLabel(c.getChecklistType(), "Unknown")),
+                            "status", defaultLabel(c.getStatus(), "Unknown"),
+                            "assignedTo", valueOrEmpty(c.getAssignedTo()),
+                            "dueDate", valueOrEmpty(c.getDueDate()),
+                            "openDays", checklistOpenDays(c)
+                    ))
+                    .toList();
+            Map<String, Object> checklistsEntry = new LinkedHashMap<>();
+            checklistsEntry.put("byTag", byTag);
+            checklistsEntry.put("byStatus", byStatus);
+            checklistsEntry.put("progressByCategory", checklistProgressByTag(checklists));
+            checklistsEntry.put("completionByCategory", completionByCategory);
+            checklistsEntry.put("openByCategory", completionByCategory.stream().collect(Collectors.toMap(
+                    r -> stringValue(r.get("category")),
+                    r -> longValue(r.get("total")) - longValue(r.get("closed")),
+                    (l, rr) -> l, LinkedHashMap::new)));
+            checklistsEntry.put("weekOverWeek", weekOverWeek);
+            checklistsEntry.put("outlierRows", buildChecklistOutlierRows(checklists));
+            checklistsEntry.put("categoryStatusRows", buildChecklistCategoryStatusTable(checklists));
+            checklistsEntry.put("inProgressCount", inProgressCount);
+            checklistsEntry.put("cxaToVerifyCount", cxaToVerifyCount);
+            checklistsEntry.put("cxaRows", cxaRows);
+            checklistsEntry.put("rows", checklistRows);
+            checklistsEntry.put("totalRows", checklists.size());
+            sectionData.put("checklists", checklistsEntry);
         }
 
         if (sections.contains("issues")) {
@@ -461,11 +481,14 @@ public class SavedReportService {
                             "location", valueOrEmpty(issue.getLocation())
                     ))
                     .toList();
+            long issueCxaCount = issues.stream().filter(this::isCxaToVerifyIssue).count();
             Map<String, Object> issueSection = new LinkedHashMap<>();
             issueSection.put("byStatus", byStatus);
             issueSection.put("byPriority", byPriority);
             issueSection.put("topLocations", topIssueLocations(issues));
             issueSection.put("progressByCategory", issueProgressByPriority(issues));
+            issueSection.put("issueCxaCount", issueCxaCount);
+            issueSection.put("issuesByDiscipline", buildIssuesByDiscipline(issues, equipment));
             issueSection.put("rows", issueRows);
             issueSection.put("totalRows", issues.size());
             issueSection.putAll(companyBreakdown);
@@ -517,12 +540,13 @@ public class SavedReportService {
                             "tests", item.getTestCount() == null ? 0 : item.getTestCount()
                     ))
                     .toList();
-            sectionData.put("equipment", Map.of(
-                    "byType", byType,
-                    "byStatus", byStatus,
-                    "rows", equipmentRows,
-                    "totalRows", equipment.size()
-            ));
+            Map<String, Object> equipSection = new LinkedHashMap<>();
+            equipSection.put("byType", byType);
+            equipSection.put("byStatus", byStatus);
+            equipSection.put("rows", equipmentRows);
+            equipSection.put("totalRows", equipment.size());
+            equipSection.put("disciplineMatrix", buildEquipmentDisciplineMatrix(equipment, checklists));
+            sectionData.put("equipment", equipSection);
         }
 
         if (sections.contains("summary")) {
@@ -791,24 +815,63 @@ public class SavedReportService {
     }
 
     private List<Map<String, Object>> buildChecklistWeekOverWeek(List<Checklist> checklists, Range range, int weeks) {
-        LocalDate anchor = startOfWeek(range == null ? LocalDate.now() : range.to());
+        // Weeks end on Friday; the period is Sat–Fri (7 days).
+        LocalDate anchor = fridayOnOrBefore(range == null ? LocalDate.now() : range.to());
         List<Map<String, Object>> rows = new ArrayList<>();
         for (int offset = weeks - 1; offset >= 0; offset--) {
-            LocalDate start = anchor.minusWeeks(offset);
-            LocalDate end = start.plusDays(6);
+            LocalDate friday = anchor.minusWeeks(offset);
+            LocalDate saturday = friday.minusDays(6); // start of the Sat-Fri period
             long closed = checklists.stream()
                     .filter(this::isClosedChecklist)
                     .filter(checklist -> {
                         LocalDate finished = checklistFinishedDate(checklist);
-                        return finished != null && !finished.isBefore(start) && !finished.isAfter(end);
+                        return finished != null && !finished.isBefore(saturday) && !finished.isAfter(friday);
                     })
                     .count();
             rows.add(row(
-                    "week", start.format(DateTimeFormatter.ofPattern("d-MMM")),
+                    "week", friday.format(DateTimeFormatter.ofPattern("d MMM")),
                     "closed", closed
             ));
         }
         return rows;
+    }
+
+    private List<Map<String, Object>> buildChecklistCategoryStatusTable(List<Checklist> checklists) {
+        List<String> categories = List.of("red", "yellow", "green", "blue", "non_critical");
+        return categories.stream()
+                .map(tag -> {
+                    List<Checklist> bucket = checklists.stream()
+                            .filter(c -> tag.equals(resolveChecklistCategory(c)))
+                            .toList();
+                    long total = bucket.size();
+                    long closed = bucket.stream().filter(this::isClosedChecklist).count();
+                    long inProgress = bucket.stream().filter(this::isInProgressChecklist).count();
+                    long cxaToVerify = bucket.stream().filter(this::isCxaToVerifyChecklist).count();
+                    long open = Math.max(0L, total - closed - inProgress - cxaToVerify);
+                    String displayLabel = switch (tag) {
+                        case "red" -> "Red Tag (L1 / L2A)";
+                        case "yellow" -> "Yellow Tag (L2B)";
+                        case "green" -> "Green Tag (L3)";
+                        case "blue" -> "Blue Tag (L4)";
+                        default -> "Non Critical";
+                    };
+                    return row(
+                            "category", displayLabel,
+                            "tag", tag,
+                            "total", total,
+                            "closed", closed,
+                            "inProgress", inProgress,
+                            "open", open,
+                            "cxaToVerify", cxaToVerify
+                    );
+                })
+                .toList();
+    }
+
+    private String resolveChecklistCategory(Checklist checklist) {
+        String tag = normalize(defaultLabel(checklist.getTagLevel(), ""));
+        if ("red".equals(tag) || "yellow".equals(tag) || "green".equals(tag) || "blue".equals(tag)) return tag;
+        return "non_critical";
     }
 
     private List<Map<String, Object>> buildChecklistOutlierRows(List<Checklist> checklists) {
@@ -1190,6 +1253,81 @@ public class SavedReportService {
         return row("rows", rows);
     }
 
+    private List<Map<String, Object>> buildEquipmentDisciplineMatrix(List<Equipment> equipment, List<Checklist> checklists) {
+        // Build equipment lookup (externalId / tag / name → Equipment)
+        Map<String, Equipment> equipmentLookup = new LinkedHashMap<>();
+        for (Equipment item : equipment) {
+            for (String alias : List.of(
+                    item.getExternalId() != null ? item.getExternalId() : "",
+                    item.getTag() != null ? item.getTag() : "",
+                    item.getName() != null ? item.getName() : "")) {
+                String key = normalize(alias);
+                if (StringUtils.hasText(key) && !equipmentLookup.containsKey(key)) {
+                    equipmentLookup.put(key, item);
+                }
+            }
+        }
+        // Seed matrix from equipment list so all types appear even with 0 checklists
+        // Structure: discipline -> equipmentType -> level -> [total, closed]
+        List<String> discOrder = List.of("Electrical", "Mechanical", "Other");
+        Map<String, Map<String, Map<String, long[]>>> matrix = new LinkedHashMap<>();
+        for (String d : discOrder) matrix.put(d, new LinkedHashMap<>());
+        for (Equipment item : equipment) {
+            String disc = normalizeDiscipline(item.getDiscipline());
+            String type = firstNonBlank(item.getEquipmentType(), item.getSystemName(), item.getName(), "Unknown");
+            matrix.computeIfAbsent(disc, k -> new LinkedHashMap<>())
+                  .computeIfAbsent(type, k -> {
+                      Map<String, long[]> lv = new LinkedHashMap<>();
+                      lv.put("L1", new long[2]); lv.put("L2", new long[2]); lv.put("L3", new long[2]);
+                      return lv;
+                  });
+        }
+        // Accumulate checklist counts
+        for (Checklist c : checklists) {
+            String level = checklistLevel(c);
+            if (level == null || "L4".equals(level)) continue;
+            Equipment item = resolveChecklistEquipment(c, equipmentLookup);
+            if (item == null) continue;
+            String disc = normalizeDiscipline(item.getDiscipline());
+            String type = firstNonBlank(item.getEquipmentType(), item.getSystemName(), item.getName(), "Unknown");
+            long[] vals = matrix.computeIfAbsent(disc, k -> new LinkedHashMap<>())
+                                .computeIfAbsent(type, k -> {
+                                    Map<String, long[]> lv = new LinkedHashMap<>();
+                                    lv.put("L1", new long[2]); lv.put("L2", new long[2]); lv.put("L3", new long[2]);
+                                    return lv;
+                                })
+                                .get(level);
+            vals[0]++;
+            if (isClosedChecklist(c)) vals[1]++;
+        }
+        // Flatten to rows with discipline group headers
+        List<Map<String, Object>> result = new java.util.ArrayList<>();
+        for (String disc : discOrder) {
+            Map<String, Map<String, long[]>> types = matrix.get(disc);
+            if (types == null || types.isEmpty()) continue;
+            result.add(row("isHeader", true, "discipline", disc, "equipmentType", disc, "red", "", "yellow", "", "green", ""));
+            types.entrySet().stream()
+                 .sorted(Map.Entry.comparingByKey(String.CASE_INSENSITIVE_ORDER))
+                 .forEach(e -> {
+                     Map<String, long[]> lv = e.getValue();
+                     result.add(row(
+                             "isHeader", false,
+                             "discipline", disc,
+                             "equipmentType", e.getKey(),
+                             "red",    formatChecklistPct(lv.get("L1")),
+                             "yellow", formatChecklistPct(lv.get("L2")),
+                             "green",  formatChecklistPct(lv.get("L3"))
+                     ));
+                 });
+        }
+        return result;
+    }
+
+    private String formatChecklistPct(long[] totClosed) {
+        if (totClosed[0] == 0) return "0%";
+        return formatPercent(percent(totClosed[1], totClosed[0]));
+    }
+
     private List<Map<String, Object>> buildOverdueChecklistRows(List<Checklist> checklists) {
         LocalDate today = LocalDate.now();
         return checklists.stream()
@@ -1341,6 +1479,8 @@ public class SavedReportService {
         manualContent.put("shiftWindow", valueOrEmpty(request.getShiftWindow()));
         manualContent.put("reportAuthor", valueOrEmpty(request.getReportAuthor()));
         manualContent.put("peopleOnSite", valueOrEmpty(request.getPeopleOnSite()));
+        manualContent.put("logoLeft", valueOrEmpty(request.getLogoLeft()));
+        manualContent.put("logoRight", valueOrEmpty(request.getLogoRight()));
         return manualContent;
     }
 
@@ -1588,6 +1728,119 @@ public class SavedReportService {
             }
             html.append("</tr>");
         });
+        html.append("</tbody></table>");
+    }
+
+    private String buildTagBarChartSvg(List<Map<String, Object>> deliveryRows) {
+        // Fixed 4 tag slots matching the reference design
+        String[][] slots = {
+            {"Red Tag (L1 / L2A)", "Red Tag", "(L1/L2A)"},
+            {"Yellow Tag (L2 / L2B)", "Yellow Tag", "(L2B)"},
+            {"Green Tag (L3)", "Green Tag", "(L3)"},
+            {"Blue Tag (L4)", "Blue Tag", "(L4)"}
+        };
+        int svgW = 590, svgH = 225;
+        int leftPad = 46, rightPad = 12, topPad = 34, bottomPad = 46;
+        int chartW = svgW - leftPad - rightPad;
+        int chartH = svgH - topPad - bottomPad;
+        int n = slots.length;
+        double groupW = (double) chartW / n;
+        double barW = groupW * 0.52;
+
+        long maxTotal = deliveryRows.stream().mapToLong(r -> longValue(r.get("planned"))).max().orElse(0);
+        long yMax = maxTotal == 0 ? 100 : (long)(Math.ceil((double)maxTotal / 50.0) * 50);
+        if (yMax < 50) yMax = 50;
+        long yStep = yMax <= 100 ? 25 : 50;
+        int bottom = topPad + chartH;
+
+        StringBuilder svg = new StringBuilder();
+        svg.append("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"").append(svgW).append("\" height=\"").append(svgH).append("\">");
+
+        // Gridlines + Y labels
+        for (long yVal = 0; yVal <= yMax; yVal += yStep) {
+            double y = topPad + chartH - (double) yVal / yMax * chartH;
+            svg.append(String.format(Locale.US, "<line x1=\"%d\" y1=\"%.1f\" x2=\"%d\" y2=\"%.1f\" stroke=\"#dde4ef\" stroke-width=\"0.8\" stroke-dasharray=\"3,2\"/>", leftPad, y, leftPad + chartW, y));
+            svg.append(String.format(Locale.US, "<text x=\"%d\" y=\"%.1f\" text-anchor=\"end\" font-size=\"7\" fill=\"#64748b\">%d</text>", leftPad - 4, y + 3, yVal));
+        }
+        // Axes
+        svg.append(String.format(Locale.US, "<line x1=\"%d\" y1=\"%d\" x2=\"%d\" y2=\"%d\" stroke=\"#1a2744\" stroke-width=\"1\"/>", leftPad, topPad, leftPad, bottom));
+        svg.append(String.format(Locale.US, "<line x1=\"%d\" y1=\"%d\" x2=\"%d\" y2=\"%d\" stroke=\"#1a2744\" stroke-width=\"1\"/>", leftPad, bottom, leftPad + chartW, bottom));
+        // Y axis title
+        svg.append(String.format(Locale.US, "<text transform=\"rotate(-90)\" x=\"-%d\" y=\"13\" text-anchor=\"middle\" font-size=\"7.5\" font-weight=\"700\" fill=\"#1a2744\">Checklists</text>", topPad + chartH / 2));
+
+        // Bars
+        for (int i = 0; i < n; i++) {
+            String tagKey = slots[i][0];
+            String xLine1 = slots[i][1];
+            String xLine2 = slots[i][2];
+            double cx = leftPad + groupW * i + groupW / 2.0;
+            double x0 = cx - barW / 2.0;
+
+            Map<String, Object> row = deliveryRows.stream()
+                .filter(r -> tagKey.equalsIgnoreCase(stringValue(r.get("tagLevel"))))
+                .findFirst().orElse(null);
+
+            // Tag-specific colors
+            String openColor, closedColor, labelColor;
+            switch (i) {
+                case 0 -> { openColor = "#f9a8a8"; closedColor = "#8b1a1a"; labelColor = "#cc2222"; } // Red tag
+                case 1 -> { openColor = "#fde68a"; closedColor = "#b45309"; labelColor = "#92400e"; } // Yellow tag
+                case 2 -> { openColor = "#bbf7d0"; closedColor = "#166534"; labelColor = "#14532d"; } // Green tag
+                default -> { openColor = "#bfdbfe"; closedColor = "#1e40af"; labelColor = "#1e3a8a"; } // Blue tag
+            }
+
+            if (row == null) {
+                svg.append(String.format(Locale.US, "<text x=\"%.1f\" y=\"%d\" text-anchor=\"middle\" font-size=\"7\" fill=\"#94a3b8\" font-style=\"italic\">No data</text>", cx, bottom - chartH / 2 + 5));
+                svg.append(String.format(Locale.US, "<text x=\"%.1f\" y=\"%d\" text-anchor=\"middle\" font-size=\"7\" fill=\"#94a3b8\" font-style=\"italic\">uploaded</text>", cx, bottom - chartH / 2 + 16));
+            } else {
+                long total = longValue(row.get("planned"));
+                long closed = longValue(row.get("complete"));
+                long open = longValue(row.get("open"));
+                String pctStr = stringValue(row.get("percentage"));
+
+                double closedH = total > 0 ? ((double) closed / yMax) * chartH : 0;
+                double openH = total > 0 ? ((double) open / yMax) * chartH : 0;
+                double totalBarTop = bottom - closedH - openH;
+
+                if (open > 0) {
+                    svg.append(String.format(Locale.US, "<rect x=\"%.1f\" y=\"%.1f\" width=\"%.1f\" height=\"%.1f\" fill=\"%s\"/>", x0, totalBarTop, barW, openH, openColor));
+                }
+                if (closed > 0) {
+                    svg.append(String.format(Locale.US, "<rect x=\"%.1f\" y=\"%.1f\" width=\"%.1f\" height=\"%.1f\" fill=\"%s\"/>", x0, (double) bottom - closedH, barW, closedH, closedColor));
+                }
+                // Labels above bar
+                svg.append(String.format(Locale.US, "<text x=\"%.1f\" y=\"%.1f\" text-anchor=\"middle\" font-size=\"7.5\" font-weight=\"800\" fill=\"%s\">%s</text>", cx, totalBarTop - 12, labelColor, escapeHtml(pctStr)));
+                svg.append(String.format(Locale.US, "<text x=\"%.1f\" y=\"%.1f\" text-anchor=\"middle\" font-size=\"7\" fill=\"%s\">(%d/%d)</text>", cx, totalBarTop - 3, labelColor, closed, total));
+            }
+
+            // X axis labels (2 lines)
+            svg.append(String.format(Locale.US, "<text x=\"%.1f\" y=\"%d\" text-anchor=\"middle\" font-size=\"7.5\" font-weight=\"600\" fill=\"#1a2744\">%s</text>", cx, bottom + 11, escapeHtml(xLine1)));
+            svg.append(String.format(Locale.US, "<text x=\"%.1f\" y=\"%d\" text-anchor=\"middle\" font-size=\"7.5\" font-weight=\"600\" fill=\"#1a2744\">%s</text>", cx, bottom + 22, escapeHtml(xLine2)));
+        }
+
+        svg.append("</svg>");
+        return svg.toString();
+    }
+
+    private void appendTsvTable(StringBuilder html, String tsv) {
+        if (!StringUtils.hasText(tsv)) return;
+        String[] rows = tsv.trim().split("\n");
+        if (rows.length == 0) return;
+        String[] headers = rows[0].split("\t", -1);
+        html.append("<table><thead><tr>");
+        for (String header : headers) {
+            html.append("<th>").append(escapeHtml(header.trim())).append("</th>");
+        }
+        html.append("</tr></thead><tbody>");
+        for (int i = 1; i < rows.length; i++) {
+            String[] cells = rows[i].split("\t", -1);
+            html.append("<tr>");
+            for (int j = 0; j < headers.length; j++) {
+                String cell = j < cells.length ? cells[j].trim() : "";
+                html.append("<td>").append(escapeHtml(cell)).append("</td>");
+            }
+            html.append("</tr>");
+        }
         html.append("</tbody></table>");
     }
 
@@ -1915,88 +2168,120 @@ public class SavedReportService {
                     body { font-family: 'Segoe UI', Arial, sans-serif; background: #fff; color: #0f172a; }
                     .pdf-page { width: 210mm; min-height: 297mm; position: relative; page-break-before: always; page-break-after: always; overflow: hidden; }
                     .pdf-page:first-child { page-break-before: avoid; }
-                    .page-banner { background: #1a2744; color: #fff; padding: 14mm 12mm 8mm; }
-                    .page-banner__title { font-size: 22pt; font-weight: 800; letter-spacing: 0.01em; line-height: 1.1; }
-                    .page-banner__subtitle { font-size: 9pt; color: rgba(255,255,255,0.72); margin-top: 4px; }
-                    .cover-meta-row { display: flex; gap: 0; margin-top: 10px; border-top: 2px solid #c9a227; padding-top: 8px; }
-                    .cover-meta-cell { flex: 1; padding: 4px 8px; }
+
+                    /* ── Banner ── */
+                    .page-banner { background: #1a2744; color: #fff; padding: 8mm 12mm 7mm; border-bottom: 3px solid #c9a227; }
+                    .banner-logos { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; min-height: 52px; }
+                    .banner-logo { max-height: 50px; max-width: 150px; object-fit: contain; }
+                    .page-banner__title { font-size: 24pt; font-weight: 800; letter-spacing: 0.01em; line-height: 1.1; }
+                    .page-banner__subtitle { font-size: 9pt; color: rgba(255,255,255,0.65); margin-top: 3px; }
+                    .cover-meta-row { display: flex; gap: 0; margin-top: 10px; border-top: 1px solid rgba(201,162,39,0.5); padding-top: 8px; }
+                    .cover-meta-cell { flex: 1; padding: 0 10px; }
                     .cover-meta-cell:first-child { padding-left: 0; }
-                    .cover-meta-cell__label { font-size: 7pt; color: #c9a227; text-transform: uppercase; letter-spacing: 0.1em; font-weight: 700; }
-                    .cover-meta-cell__value { font-size: 9pt; color: #fff; margin-top: 2px; font-weight: 600; }
-                    .gold-divider { border: none; border-top: 2px solid #c9a227; margin: 0 12mm; }
-                    .page-content { padding: 5mm 12mm 20mm; }
-                    .section-heading { font-size: 8.5pt; font-weight: 800; text-transform: uppercase; letter-spacing: 0.12em; color: #1a2744; border-bottom: 2px solid #1a2744; padding-bottom: 3px; margin: 9px 0 7px; }
-                    .kpi-grid { display: grid; gap: 0; margin: 7px 0; border: 1px solid #e2e8f0; }
+                    .cover-meta-cell__label { font-size: 6.5pt; color: #c9a227; text-transform: uppercase; letter-spacing: 0.12em; font-weight: 800; }
+                    .cover-meta-cell__value { font-size: 9pt; color: #fff; margin-top: 3px; font-weight: 700; line-height: 1.3; }
+
+                    /* ── Page layout ── */
+                    .page-content { padding: 5mm 12mm 22mm; }
+
+                    /* ── Section headings ── */
+                    .section-heading { font-size: 8pt; font-weight: 800; text-transform: uppercase; letter-spacing: 0.14em; color: #fff; background: #1a2744; padding: 5px 9px; margin: 10px 0 7px; }
+
+                    /* ── KPI cards ── */
+                    .kpi-grid { display: grid; gap: 5px; margin: 6px 0; }
                     .kpi-grid--6 { grid-template-columns: repeat(6, 1fr); }
                     .kpi-grid--5 { grid-template-columns: repeat(5, 1fr); }
-                    .kpi-card { padding: 8px 6px 6px; text-align: center; border-right: 1px solid #e2e8f0; }
-                    .kpi-card:last-child { border-right: none; }
-                    .kpi-card__number { font-size: 20pt; font-weight: 800; color: #0f172a; line-height: 1; }
-                    .kpi-card__label { font-size: 6.5pt; color: #64748b; margin-top: 3px; text-transform: uppercase; letter-spacing: 0.04em; }
-                    .kpi-card__sub { font-size: 7pt; color: #1a2744; font-weight: 700; margin-top: 2px; }
-                    .insight-box { background: #eff6ff; border-left: 4px solid #2563eb; padding: 7px 10px; border-radius: 3px; margin: 7px 0; }
-                    .insight-box ul { margin: 0; padding-left: 14px; font-size: 8pt; line-height: 1.6; color: #1e293b; }
-                    .insight-box li + li { margin-top: 2px; }
+                    .kpi-grid--4 { grid-template-columns: repeat(4, 1fr); }
+                    .kpi-card { padding: 18px 7px 10px; text-align: center; background: #1a2744; border-radius: 6px 6px 0 0; border-bottom: 3px solid #c9a227; color: #fff; }
+                    .kpi-card--green { background: #1a5c2a; }
+                    .kpi-card--amber { background: #7a4200; }
+                    .kpi-card--teal  { background: #0e4c5c; }
+                    .kpi-card--inprogress { background: #5c4000; }
+                    .kpi-card--cxa { background: #0e3d5c; }
+                    .kpi-card__number { font-size: 20pt; font-weight: 800; color: #fff; line-height: 1; }
+                    .kpi-card__label { font-size: 6pt; color: rgba(255,255,255,0.75); margin-top: 5px; text-transform: uppercase; letter-spacing: 0.06em; }
+                    .kpi-card__sub { font-size: 6.5pt; color: #c9a227; font-weight: 800; margin-top: 3px; }
+
+                    /* ── Insight / key insights box ── */
+                    .insight-box { background: #f0f4fa; border-left: 4px solid #1a2744; padding: 8px 11px; margin: 6px 0; }
+                    .insight-box ul { margin: 0; padding-left: 0; list-style: none; font-size: 8pt; line-height: 1.7; color: #1e293b; }
+                    .insight-box li { padding-left: 12px; position: relative; }
+                    .insight-box li::before { content: "•"; position: absolute; left: 0; color: #1a2744; font-weight: 800; }
+                    .insight-box li + li { margin-top: 1px; }
+                    .insight-box li strong { font-weight: 800; color: #1a2744; }
+
+                    /* ── Progress row ── */
                     .progress-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 7px 0; }
-                    .progress-panel { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 5px; padding: 7px 9px; }
-                    .progress-panel__title { font-size: 7.5pt; font-weight: 800; color: #1a2744; margin-bottom: 5px; text-transform: uppercase; letter-spacing: 0.06em; }
-                    .hbar-list { display: grid; gap: 5px; }
-                    .hbar-row { display: grid; grid-template-columns: 100px 1fr 42px; gap: 6px; align-items: center; }
-                    .hbar-label { font-size: 7.5pt; color: #334155; font-weight: 700; }
-                    .hbar-track { height: 10px; background: #e2e8f0; border-radius: 99px; overflow: hidden; position: relative; }
-                    .hbar-fill { position: absolute; inset: 0 auto 0 0; border-radius: 99px; background: #1a2744; }
-                    .hbar-val { font-size: 8pt; color: #1a2744; font-weight: 700; text-align: right; }
+                    .progress-panel { background: #f8fafc; border: 1px solid #dde4ef; padding: 8px 10px; }
+                    .progress-panel__title { font-size: 7pt; font-weight: 800; color: #1a2744; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.08em; border-bottom: 1px solid #dde4ef; padding-bottom: 4px; }
+                    .hbar-list { display: grid; gap: 6px; }
+                    .hbar-row { display: grid; grid-template-columns: 90px 1fr 42px; gap: 6px; align-items: center; }
+                    .hbar-label { font-size: 7.5pt; color: #1a2744; font-weight: 700; }
+                    .hbar-track { height: 11px; background: #e2e8f0; overflow: hidden; position: relative; border-radius: 2px; }
+                    .hbar-fill { position: absolute; inset: 0 auto 0 0; background: #1a2744; border-radius: 2px; }
+                    .hbar-val { font-size: 8pt; color: #1a2744; font-weight: 800; text-align: right; }
+
+                    /* ── Charts ── */
                     .chart-panels { display: grid; grid-template-columns: repeat(3, 1fr); gap: 7px; margin: 7px 0; }
-                    .chart-panel { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 5px; padding: 7px; }
+                    .chart-panel { background: #f8fafc; border: 1px solid #dde4ef; padding: 7px; }
                     .chart-panel__title { font-size: 7pt; font-weight: 800; color: #1a2744; margin-bottom: 5px; text-transform: uppercase; letter-spacing: 0.06em; }
                     .bubble-list { display: grid; gap: 5px; }
                     .bubble-row { display: flex; align-items: center; gap: 7px; font-size: 8pt; color: #334155; }
                     .bubble-dot { width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0; }
                     .bubble-count { font-weight: 800; color: #0f172a; margin-left: auto; font-size: 8pt; }
+                    .bar-list { display: grid; gap: 7px; margin-top: 7px; }
+                    .bar-row { display: grid; grid-template-columns: 110px 1fr 44px; gap: 9px; align-items: center; }
+                    .bar-label { font-size: 8pt; color: #1a2744; font-weight: 700; }
+                    .bar-track { position: relative; height: 10px; background: #e2e8f0; overflow: hidden; border-radius: 2px; }
+                    .bar-fill { position: absolute; inset: 0 auto 0 0; background: #1a2744; border-radius: 2px; }
+                    .bar-value { font-size: 8pt; color: #1a2744; font-weight: 800; text-align: right; }
+
+                    /* ── Tables ── */
                     table { width: 100%; border-collapse: collapse; margin: 5px 0; font-size: 7.5pt; }
                     thead tr { background: #1a2744; color: #fff; }
                     thead th { padding: 5px 7px; font-size: 7pt; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; text-align: left; color: #fff; }
-                    tbody td { padding: 4px 7px; color: #1e293b; border-bottom: 1px solid #eef2f7; vertical-align: top; }
-                    tbody tr:nth-child(even) td { background: #f8fafc; }
+                    tbody td { padding: 5px 7px; color: #1e293b; border-bottom: 1px solid #eef2f7; vertical-align: top; }
+                    tbody tr:nth-child(even) td { background: #f4f7fb; }
                     tbody tr:last-child td { border-bottom: none; }
                     tfoot tr { background: #1a2744; color: #fff; font-weight: 700; }
                     tfoot td { padding: 4px 7px; font-size: 7pt; color: #fff; }
-                    .badge { display: inline-block; padding: 2px 6px; border-radius: 999px; font-size: 7pt; font-weight: 800; }
+
+                    /* ── Badges ── */
+                    .badge { display: inline-block; padding: 2px 6px; border-radius: 3px; font-size: 7pt; font-weight: 800; }
                     .badge--green { background: #dcfce7; color: #166534; }
                     .badge--amber { background: #fef3c7; color: #92400e; }
                     .badge--red { background: #fee2e2; color: #991b1b; }
                     .badge--blue { background: #dbeafe; color: #1d4ed8; }
                     .badge--slate { background: #e2e8f0; color: #334155; }
+
+                    /* ── Footer ── */
                     .page-footer { position: absolute; bottom: 8mm; left: 12mm; right: 0; display: flex; align-items: center; font-size: 6.5pt; color: #94a3b8; }
                     .page-footer__text { flex: 1; }
-                    .page-footer__tab { background: #c9a227; color: #fff; font-weight: 800; font-size: 6.5pt; padding: 4px 11px; text-transform: uppercase; letter-spacing: 0.1em; }
-                    .note { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 4px; padding: 7px 9px; color: #334155; font-size: 8pt; line-height: 1.5; white-space: pre-wrap; margin: 6px 0; }
-                    .subheading { font-size: 8pt; font-weight: 800; text-transform: uppercase; letter-spacing: 0.1em; color: #64748b; margin: 8px 0 5px; }
-                    .insight-list { margin: 0; padding-left: 16px; color: #1e293b; font-size: 8pt; line-height: 1.6; }
-                    .insight-list li + li { margin-top: 3px; }
-                    .bar-list { display: grid; gap: 7px; margin-top: 7px; }
-                    .bar-row { display: grid; grid-template-columns: 110px 1fr 44px; gap: 9px; align-items: center; }
-                    .bar-label { font-size: 8pt; color: #334155; font-weight: 700; }
-                    .bar-track { position: relative; height: 9px; background: #e2e8f0; border-radius: 999px; overflow: hidden; }
-                    .bar-fill { position: absolute; inset: 0 auto 0 0; border-radius: 999px; background: linear-gradient(90deg, #1a2744 0%, #3b6cb7 100%); }
-                    .bar-value { font-size: 8pt; color: #475569; font-weight: 800; text-align: right; }
+                    .page-footer__tab { background: #c9a227; color: #fff; font-weight: 800; font-size: 6.5pt; padding: 4px 12px; text-transform: uppercase; letter-spacing: 0.1em; }
+
+                    /* ── Misc ── */
+                    .note { background: #f4f7fb; border-left: 3px solid #1a2744; padding: 7px 10px; color: #334155; font-size: 8pt; line-height: 1.6; white-space: pre-wrap; margin: 6px 0; }
+                    .subheading { font-size: 7.5pt; font-weight: 800; text-transform: uppercase; letter-spacing: 0.1em; color: #1a2744; margin: 8px 0 5px; border-bottom: 1px solid #dde4ef; padding-bottom: 3px; }
+                    .insight-list { margin: 0; padding-left: 0; list-style: none; color: #1e293b; font-size: 8pt; line-height: 1.7; }
+                    .insight-list li { padding-left: 12px; position: relative; }
+                    .insight-list li::before { content: "•"; position: absolute; left: 0; color: #1a2744; font-weight: 800; }
+                    .insight-list li + li { margin-top: 2px; }
                     .photo-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 8px; }
-                    .photo-box { height: 80px; border-radius: 8px; background: #f1f5f9; border: 1px dashed #94a3b8; display: flex; align-items: center; justify-content: center; color: #64748b; font-size: 8pt; font-weight: 700; text-transform: uppercase; }
-                    .section { background: #fff; border: 1px solid #dbe7f5; border-radius: 10px; overflow: hidden; break-inside: avoid; margin-bottom: 10px; }
-                    .section-head { padding: 8px 11px; background: #f8fbff; border-bottom: 1px solid #e2ebf7; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-                    .section-title { font-size: 10pt; font-weight: 800; color: #0f172a; }
-                    .section-meta { font-size: 7pt; text-transform: uppercase; letter-spacing: 0.1em; color: #64748b; font-weight: 800; }
+                    .photo-box { height: 80px; background: #f1f5f9; border: 1px dashed #94a3b8; display: flex; align-items: center; justify-content: center; color: #64748b; font-size: 8pt; font-weight: 700; text-transform: uppercase; }
+                    .section { background: #fff; border: 1px solid #dde4ef; overflow: hidden; break-inside: avoid; margin-bottom: 10px; }
+                    .section-head { padding: 7px 11px; background: #1a2744; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+                    .section-title { font-size: 10pt; font-weight: 800; color: #fff; }
+                    .section-meta { font-size: 7pt; text-transform: uppercase; letter-spacing: 0.1em; color: #c9a227; font-weight: 800; }
                     .section-body { padding: 9px 11px 11px; }
-                    .mini-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 7px; margin-top: 8px; }
-                    .mini-stat { border-radius: 8px; padding: 8px 9px; color: #0f172a; background: #f8fbff; border: 1px solid #dbe7f5; border-left: 3px solid #94a3b8; }
-                    .mini-stat--green { border-left-color: #22c55e; background: #f0fdf4; }
-                    .mini-stat--amber { border-left-color: #f59e0b; background: #fffbeb; }
-                    .mini-stat--red { border-left-color: #ef4444; background: #fef2f2; }
-                    .mini-stat--blue { border-left-color: #3b82f6; background: #eff6ff; }
-                    .mini-label { font-size: 7.5pt; text-transform: uppercase; letter-spacing: 0.07em; color: #64748b; font-weight: 800; }
-                    .mini-value { font-size: 14pt; font-weight: 800; margin-top: 4px; }
-                    .mini-sub { font-size: 8pt; color: #64748b; margin-top: 3px; }
-                    .metric-chip { display: inline-block; min-width: 48px; text-align: center; padding: 3px 6px; border-radius: 8px; font-weight: 800; font-size: 8pt; }
+                    .mini-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 5px; margin-top: 8px; }
+                    .mini-stat { padding: 8px 9px; background: #1a2744; border-bottom: 3px solid #c9a227; }
+                    .mini-stat--green { background: #1a5c2a; }
+                    .mini-stat--amber { background: #7a4200; }
+                    .mini-stat--teal { background: #0e4c5c; }
+                    .mini-label { font-size: 7pt; text-transform: uppercase; letter-spacing: 0.07em; color: rgba(255,255,255,0.7); font-weight: 800; }
+                    .mini-value { font-size: 14pt; font-weight: 800; margin-top: 4px; color: #fff; }
+                    .mini-sub { font-size: 7.5pt; color: #c9a227; margin-top: 2px; font-weight: 700; }
+                    .metric-chip { display: inline-block; min-width: 48px; text-align: center; padding: 3px 6px; border-radius: 3px; font-weight: 800; font-size: 8pt; }
                     .metric-chip--green { background: #dcfce7; color: #166534; }
                     .metric-chip--amber { background: #fef3c7; color: #92400e; }
                     .metric-chip--red { background: #fee2e2; color: #991b1b; }
@@ -2023,6 +2308,8 @@ public class SavedReportService {
                 html.append(renderChecklistPageHtml(settings, reportData, summary, executive, report, project));
             } else if ("issues".equals(sectionId)) {
                 html.append(renderIssuesPageHtml(settings, reportData, summary, executive, report, project));
+            } else if ("equipment".equals(sectionId)) {
+                html.append(renderEquipmentPageHtml(settings, reportData, summary, executive, report, project));
             } else {
                 html.append("<div class=\"page-banner\"><div class=\"page-banner__title\">")
                         .append(escapeHtml(resolveSectionTitle(sectionId, settings)))
@@ -2034,6 +2321,10 @@ public class SavedReportService {
             }
             html.append("</div>");
         }
+        // Appendix: Project Completion Forecast
+        html.append("<div class=\"pdf-page\">");
+        html.append(renderForecastAppendixHtml(reportData, summary, executive, report, project));
+        html.append("</div>");
         html.append("</body></html>");
         return html.toString();
     }
@@ -2054,6 +2345,9 @@ public class SavedReportService {
         String client = firstNonBlank(stringValue(projectDetails.get("client")), "");
         String location = firstNonBlank(stringValue(projectDetails.get("location")), "");
         String author = firstNonBlank(stringValue(projectDetails.get("author")), report.getGeneratedBy());
+        Map<String, Object> manualContent = asMap(reportData.get("manualContent"));
+        String logoLeft = stringValue(manualContent.get("logoLeft"));
+        String logoRight = stringValue(manualContent.get("logoRight"));
         long checklistTotal = longValue(asMap(summary.get("checklists")).get("total"));
         long checklistClosed = longValue(asMap(summary.get("checklists")).get("closed"));
         long checklistOpen = longValue(asMap(summary.get("checklists")).get("open"));
@@ -2070,6 +2364,20 @@ public class SavedReportService {
 
         // Banner
         sb.append("<div class=\"page-banner\">");
+        if (StringUtils.hasText(logoLeft) || StringUtils.hasText(logoRight)) {
+            sb.append("<div class=\"banner-logos\">");
+            if (StringUtils.hasText(logoLeft)) {
+                sb.append("<img src=\"").append(logoLeft).append("\" class=\"banner-logo\" alt=\"\" />");
+            } else {
+                sb.append("<div></div>");
+            }
+            if (StringUtils.hasText(logoRight)) {
+                sb.append("<img src=\"").append(logoRight).append("\" class=\"banner-logo\" alt=\"\" />");
+            } else {
+                sb.append("<div></div>");
+            }
+            sb.append("</div>");
+        }
         sb.append("<div class=\"page-banner__title\">").append(escapeHtml(report.getTitle())).append("</div>");
         sb.append("<div class=\"page-banner__subtitle\">").append(escapeHtml(report.getSubtitle())).append("</div>");
         sb.append("<div class=\"cover-meta-row\">");
@@ -2083,28 +2391,25 @@ public class SavedReportService {
 
         sb.append("<div class=\"page-content\">");
 
-        // KPI row 1 (6 cards)
+        // KPI row 1 (5 cards — equipment removed)
         sb.append("<div class=\"section-heading\">KEY PERFORMANCE INDICATORS</div>");
-        sb.append("<div class=\"kpi-grid kpi-grid--6\">");
-        sb.append(kpiCard(String.valueOf(checklistTotal), "Total Checklists", ""));
-        sb.append(kpiCard(String.valueOf(checklistClosed), "Checklists Closed", formatPercent(percent(checklistClosed, checklistTotal))));
-        sb.append(kpiCard(String.valueOf(checklistOpen), "Checklists Open", formatPercent(percent(checklistOpen, checklistTotal))));
-        sb.append(kpiCard(String.valueOf(issueTotal), "Total Issues", ""));
-        sb.append(kpiCard(String.valueOf(issueOpen), "Open Issues", issueOpen == 0 ? "All Resolved" : "Needs Action"));
-        sb.append(kpiCard(metricValue(summary, "equipment", "total"), "Equipment Units", ""));
+        sb.append("<div class=\"kpi-grid kpi-grid--5\">");
+        sb.append(kpiCardColored(String.valueOf(checklistTotal), "Total Checklists", "", ""));
+        sb.append(kpiCardColored(String.valueOf(checklistClosed), "Checklists Closed", formatPercent(percent(checklistClosed, checklistTotal)), "kpi-card--green"));
+        sb.append(kpiCardColored(String.valueOf(checklistOpen), "Checklists Open", formatPercent(percent(checklistOpen, checklistTotal)), "kpi-card--amber"));
+        sb.append(kpiCardColored(String.valueOf(issueTotal), "Total Issues", "", ""));
+        sb.append(kpiCardColored(String.valueOf(issueOpen), "Open Issues", issueOpen == 0 ? "All Resolved" : "Needs Action", issueOpen == 0 ? "kpi-card--green" : "kpi-card--amber"));
         sb.append("</div>");
-        // KPI row 2 (6 cards)
-        sb.append("<div class=\"kpi-grid kpi-grid--6\">");
-        sb.append(kpiCard(stringValue(tagVelocity.get("avgPerWeek")), "Avg Tags / Week", "Delivery Pace"));
-        sb.append(kpiCard(stringValue(tagVelocity.get("avgPerDay")), "Avg Tags / Day", "Delivery Pace"));
-        sb.append(kpiCard(stringValue(tagVelocity.get("closedInWindow")), "Closed This Window", report.getDateFrom() + " \u2013 " + report.getDateTo()));
-        sb.append(kpiCard(avgIssueClosure + "d", "Avg Issue Closure", "Mean Closure Time"));
-        sb.append(kpiCard(String.valueOf(issueCompanyRows.size()), "Companies", "Issue Ownership"));
-        sb.append(kpiCard(firstNonBlank(stringValue(executiveSummary.get("overallCompletionPct")), "0%"), "Overall Completion", "Current Project Closeout"));
+        // KPI row 2 (4 cards)
+        sb.append("<div class=\"kpi-grid kpi-grid--4\" style=\"margin-top:4px;\">");
+        sb.append(kpiCardColored(stringValue(tagVelocity.get("avgPerWeek")), "Avg Tags / Week", "Delivery Pace", ""));
+        sb.append(kpiCardColored(stringValue(tagVelocity.get("avgPerDay")), "Avg Tags / Day", "Delivery Pace", ""));
+        sb.append(kpiCardColored(firstNonBlank(stringValue(executiveSummary.get("forecastCompletion")), "\u2014"), "Forecast Completion", "At Current Pace", "kpi-card--amber"));
+        sb.append(kpiCardColored(firstNonBlank(stringValue(executiveSummary.get("overallCompletionPct")), "0%"), "Overall Completion", "Current Closeout", "kpi-card--green"));
         sb.append("</div>");
 
-        // Executive summary
-        sb.append("<div class=\"section-heading\">EXECUTIVE SUMMARY</div>");
+        // Key Insights — 4+ structured lines
+        sb.append("<div class=\"section-heading\">KEY INSIGHTS</div>");
         sb.append("<div class=\"insight-box\"><ul>");
         if (StringUtils.hasText(narrative)) {
             for (String line : narrative.split("[\r\n]+")) {
@@ -2113,47 +2418,35 @@ public class SavedReportService {
                 }
             }
         } else {
-            sb.append("<li>").append(escapeHtml(formatPercent(overallCompletion) + " checklist completion — "
-                    + checklistClosed + " of " + checklistTotal + " items closed.")).append("</li>");
-            sb.append("<li>All ").append(issueClosed).append(" raised issues ").append(issueOpen == 0 ? "fully resolved. 0 open issues remain." : (issueOpen + " issues remain open.")).append("</li>");
-            sb.append("<li>Average issue closure time: ").append(escapeHtml(avgIssueClosure)).append(" days.</li>");
+            String pctStr = formatPercent(overallCompletion);
+            String forecastStr = firstNonBlank(stringValue(executiveSummary.get("forecastCompletion")), "TBD");
+            String windowStr = report.getDateFrom() + " \u2013 " + report.getDateTo();
+            // Line 1: checklist completion
+            sb.append("<li><strong>").append(escapeHtml(pctStr)).append(" checklist completion</strong> \u2014 ")
+              .append(checklistClosed).append(" of ").append(checklistTotal)
+              .append(" checklists signed off across all tag categories.</li>");
+            // Line 2: reporting window activity
+            sb.append("<li><strong>Reporting window ").append(escapeHtml(windowStr)).append("</strong> \u2014 ")
+              .append(escapeHtml(stringValue(tagVelocity.get("closedInWindow")))).append(" checklists closed in this period at a pace of ")
+              .append(escapeHtml(stringValue(tagVelocity.get("avgPerWeek")))).append(" tags/week (")
+              .append(escapeHtml(stringValue(tagVelocity.get("avgPerDay")))).append("/day).</li>");
+            // Line 3: issues
+            sb.append("<li><strong>").append(issueOpen == 0 ? "0 open issues" : issueOpen + " open issue" + (issueOpen == 1 ? "" : "s")).append("</strong> \u2014 ")
+              .append(issueOpen == 0 ? "all " + issueClosed + " logged issues fully resolved" : issueClosed + " resolved, " + issueOpen + " remain open")
+              .append(StringUtils.hasText(avgIssueClosure) ? " (avg closure time: " + avgIssueClosure + " days)." : ".").append("</li>");
+            // Line 4: forecast
+            sb.append("<li><strong>Forecast completion: ").append(escapeHtml(forecastStr)).append("</strong> \u2014 ")
+              .append("based on current delivery pace. Actual date may advance as additional checklists are uploaded and closed.</li>");
+            // Line 5: note
+            sb.append("<li><em>Note: forecast may shift as remaining checklists are uploaded and tag category data is completed.</em></li>");
         }
         sb.append("</ul></div>");
 
-        // Overall delivery progress
+        // Overall delivery progress — vertical bar chart by tag category
         sb.append("<div class=\"section-heading\">OVERALL DELIVERY PROGRESS</div>");
-        sb.append("<div class=\"progress-row\">");
-        // Left: donut
-        sb.append("<div class=\"progress-panel\">");
-        sb.append("<div class=\"progress-panel__title\">Checklist Completion</div>");
-        sb.append(buildDonutSvgHtml(checklistClosed, checklistOpen,
-                firstNonBlank(stringValue(executiveSummary.get("overallCompletionPct")), formatPercent(overallCompletion)),
-                "Closed: " + checklistClosed, "Open: " + checklistOpen));
+        sb.append("<div style=\"border:1px solid #dde4ef; padding:10px 12px; margin-top:6px;\">");
+        sb.append(buildTagBarChartSvg(deliveryRows));
         sb.append("</div>");
-        // Right: tag completion bars
-        sb.append("<div class=\"progress-panel\">");
-        sb.append("<div class=\"progress-panel__title\">Tag Category Completion (%)</div>");
-        sb.append("<div class=\"hbar-list\">");
-        for (Map<String, Object> row : deliveryRows) {
-            String tagLabel = stringValue(row.get("tagLevel"));
-            if (!StringUtils.hasText(tagLabel)) continue;
-            double pctVal = number(row.get("percentageValue"));
-            String pctText = firstNonBlank(stringValue(row.get("percentage")), formatPercent(pctVal));
-            sb.append("<div class=\"hbar-row\">")
-              .append("<div class=\"hbar-label\">").append(escapeHtml(tagLabel)).append("</div>")
-              .append("<div class=\"hbar-track\"><div class=\"hbar-fill\" style=\"width:").append(String.format(Locale.US, "%.1f", Math.min(100.0, pctVal))).append("%\"></div></div>")
-              .append("<div class=\"hbar-val\">").append(escapeHtml(pctText)).append("</div>")
-              .append("</div>");
-        }
-        sb.append("</div></div></div>");
-
-        // Summary insights
-        if (!summaryInsights.isEmpty()) {
-            sb.append("<div class=\"section-heading\">SUMMARY INSIGHTS</div>");
-            sb.append("<div class=\"insight-box\"><ul>");
-            summaryInsights.forEach(ins -> sb.append("<li>").append(escapeHtml(ins)).append("</li>"));
-            sb.append("</ul></div>");
-        }
 
         sb.append("</div>"); // page-content
         sb.append(buildPageFooterHtml(report, executive, "SUMMARY"));
@@ -2167,35 +2460,18 @@ public class SavedReportService {
                                             SavedReport report,
                                             Map<String, Object> project) {
         Map<String, Object> sectionEntry = asMap(asMap(reportData.get("sectionData")).get("checklists"));
-        Map<String, Object> tagVelocity = asMap(executive.get("tagVelocity"));
-        List<Map<String, Object>> completionRows = asListOfMaps(sectionEntry.get("completionByCategory"));
         List<Map<String, Object>> weekRows = asListOfMaps(sectionEntry.get("weekOverWeek"));
-        List<Map<String, Object>> outlierRows = asListOfMaps(sectionEntry.get("outlierRows"));
-        List<Map<String, Object>> deliveryRows = asListOfMaps(executive.get("keyProjectDelivery"));
-        Map<String, Long> activeTags = toCountMap(sectionEntry.get("byTag"), 6);
-        String mostActiveTag = activeTags.isEmpty() ? "N/A"
-                : activeTags.entrySet().stream().max(Map.Entry.comparingByValue()).map(Map.Entry::getKey).orElse("N/A");
-        Map<String, Long> closedInWindowByTag = deliveryRows.stream()
-                .collect(Collectors.toMap(
-                        row -> stringValue(row.get("tagLevel")),
-                        row -> longValue(row.get("closedInWindow")),
-                        (l, r) -> l, LinkedHashMap::new));
-        List<Map<String, Object>> matrixRows = completionRows.stream()
-                .map(row -> row(
-                        "category", stringValue(row.get("category")),
-                        "percentage", stringValue(row.get("percentage")),
-                        "closed", row.get("closed"),
-                        "total", row.get("total"),
-                        "open", Math.max(0L, longValue(row.get("total")) - longValue(row.get("closed"))),
-                        "thisWindow", closedInWindowByTag.getOrDefault(stringValue(row.get("category")), 0L)
-                )).toList();
+        List<Map<String, Object>> categoryStatusRows = asListOfMaps(sectionEntry.get("categoryStatusRows"));
+        List<Map<String, Object>> cxaRows = asListOfMaps(sectionEntry.get("cxaRows"));
         List<String> insights = buildSectionInsights("checklists", reportData, summary, executive);
         boolean includeChart = booleanValue(settings.get("includeChart"), true);
         boolean includeTable = booleanValue(settings.get("includeTable"), true);
         boolean includeInsights = booleanValue(settings.get("includeInsights"), true);
         long checklistTotal = longValue(asMap(summary.get("checklists")).get("total"));
         long checklistClosed = longValue(asMap(summary.get("checklists")).get("closed"));
-        long checklistOpen = longValue(asMap(summary.get("checklists")).get("open"));
+        long checklistInProgress = longValue(sectionEntry.get("inProgressCount"));
+        long checklistCxaToVerify = longValue(sectionEntry.get("cxaToVerifyCount"));
+        long checklistOpen = Math.max(0L, checklistTotal - checklistClosed - checklistInProgress - checklistCxaToVerify);
         String projectName = firstNonBlank((String) project.get("projectName"), report.getProjectName(), report.getProjectId());
 
         StringBuilder sb = new StringBuilder();
@@ -2204,91 +2480,70 @@ public class SavedReportService {
         sb.append("<div class=\"page-banner\">");
         sb.append("<div class=\"page-banner__title\">CHECKLISTS</div>");
         sb.append("<div class=\"page-banner__subtitle\">Checklist analysis \u00b7 ").append(escapeHtml(projectName))
-          .append(" \u00b7 Snapshot: ").append(escapeHtml(report.getDateFrom())).append(" \u2013 ").append(escapeHtml(report.getDateTo())).append("</div>");
+          .append(" \u00b7 ").append(escapeHtml(report.getDateFrom())).append(" \u2013 ").append(escapeHtml(report.getDateTo())).append("</div>");
         sb.append("</div>");
 
         sb.append("<div class=\"page-content\">");
 
-        // KPI overview (5 cards)
+        // Section 1: KPI cards — Total, Closed, In Progress, Open, Ready for CXA Review
         sb.append("<div class=\"section-heading\">CHECKLIST OVERVIEW</div>");
         sb.append("<div class=\"kpi-grid kpi-grid--5\">");
-        sb.append(kpiCard(String.valueOf(checklistTotal), "Total Checklists", ""));
-        sb.append(kpiCard(String.valueOf(checklistClosed), "Closed", formatPercent(percent(checklistClosed, checklistTotal))));
-        sb.append(kpiCard(String.valueOf(checklistOpen), "Open", formatPercent(percent(checklistOpen, checklistTotal))));
-        sb.append(kpiCard(stringValue(tagVelocity.get("avgPerWeek")), "Avg Tags / Week", "Delivery Pace"));
-        sb.append(kpiCard(mostActiveTag, "Most Active Tag", stringValue(tagVelocity.get("closedInWindow")) + " moved this window"));
+        sb.append(kpiCardColored(String.valueOf(checklistTotal), "Total Checklists", "project scope", ""));
+        sb.append(kpiCardColored(String.valueOf(checklistClosed), "Closed", formatPercent(percent(checklistClosed, checklistTotal)), "kpi-card--green"));
+        sb.append(kpiCardColored(String.valueOf(checklistInProgress), "In Progress", formatPercent(percent(checklistInProgress, checklistTotal)), "kpi-card--inprogress"));
+        sb.append(kpiCardColored(String.valueOf(checklistOpen), "Open", formatPercent(percent(checklistOpen, checklistTotal)), "kpi-card--amber"));
+        sb.append(kpiCardColored(String.valueOf(checklistCxaToVerify), "Ready for CXA Review", "Awaiting CX sign-off", "kpi-card--cxa"));
         sb.append("</div>");
 
-        // Charts
+        // Section 2: Week-over-week chart (actuals only, weeks ending Friday)
         if (includeChart) {
-            sb.append("<div class=\"section-heading\">CHARTS &amp; ANALYSIS</div>");
-            sb.append("<div class=\"chart-panels\">");
-            // Panel 1: WoW bar
-            sb.append("<div class=\"chart-panel\">");
-            sb.append("<div class=\"chart-panel__title\">Week-over-Week Checklist Closure</div>");
+            sb.append("<div class=\"section-heading\">WEEK-OVER-WEEK CHECKLIST CLOSURE</div>");
+            sb.append("<div style=\"border:1px solid #dde4ef;padding:10px 12px;margin-top:6px;\">");
             sb.append(buildWoWSvgHtml(weekRows));
             sb.append("</div>");
-            // Panel 2: Open vs Closed donut
-            sb.append("<div class=\"chart-panel\">");
-            sb.append("<div class=\"chart-panel__title\">Open vs Closed</div>");
-            sb.append(buildDonutSvgHtml(checklistClosed, checklistOpen,
-                    formatPercent(percent(checklistClosed, checklistTotal)),
-                    "Closed: " + checklistClosed, "Open: " + checklistOpen));
-            sb.append("</div>");
-            // Panel 3: bubble list
-            sb.append("<div class=\"chart-panel\">");
-            sb.append("<div class=\"chart-panel__title\">Items Closed vs Total</div>");
-            sb.append(buildBubbleListHtml(completionRows, "category", "closed", "total"));
-            sb.append("</div>");
-            sb.append("</div>"); // chart-panels
         }
 
-        // Category completion matrix
+        // Section 3: Checklists by category status
         if (includeTable) {
-            sb.append("<div class=\"section-heading\">CATEGORY COMPLETION MATRIX</div>");
+            sb.append("<div class=\"section-heading\">CHECKLISTS BY CATEGORY STATUS</div>");
             sb.append("<table><thead><tr>");
-            sb.append("<th>Category</th><th>% Complete</th><th>Closed</th><th>Total</th><th>Open</th><th>This Window</th>");
+            sb.append("<th>Category</th><th>Total</th><th>Closed</th><th>Open</th><th>In Progress</th><th>Ready for CXA Review</th>");
             sb.append("</tr></thead><tbody>");
-            for (Map<String, Object> row : matrixRows) {
+            Map<String, String> tagColors = Map.of(
+                    "red", "#ef4444", "yellow", "#eab308", "green", "#22c55e", "blue", "#3b82f6", "non_critical", "#94a3b8");
+            for (Map<String, Object> row : categoryStatusRows) {
+                String tag = stringValue(row.get("tag"));
+                String color = tagColors.getOrDefault(tag, "#94a3b8");
+                long rowTotal = longValue(row.get("total"));
+                String emDash = rowTotal == 0 ? "\u2014" : null;
                 sb.append("<tr>")
-                  .append("<td>").append(escapeHtml(stringValue(row.get("category")))).append("</td>")
-                  .append("<td>").append(escapeHtml(stringValue(row.get("percentage")))).append("</td>")
-                  .append("<td>").append(escapeHtml(String.valueOf(row.get("closed")))).append("</td>")
-                  .append("<td>").append(escapeHtml(String.valueOf(row.get("total")))).append("</td>")
-                  .append("<td>").append(escapeHtml(String.valueOf(row.get("open")))).append("</td>")
-                  .append("<td>").append(escapeHtml(String.valueOf(row.get("thisWindow")))).append("</td>")
+                  .append("<td style=\"border-left:4px solid ").append(color).append(";padding-left:8px;\">")
+                    .append(escapeHtml(stringValue(row.get("category")))).append("</td>")
+                  .append("<td>").append(emDash != null ? emDash : rowTotal).append("</td>")
+                  .append("<td>").append(emDash != null ? emDash : longValue(row.get("closed"))).append("</td>")
+                  .append("<td>").append(emDash != null ? emDash : longValue(row.get("open"))).append("</td>")
+                  .append("<td>").append(emDash != null ? emDash : longValue(row.get("inProgress"))).append("</td>")
+                  .append("<td>").append(emDash != null ? emDash : longValue(row.get("cxaToVerify"))).append("</td>")
                   .append("</tr>");
             }
             // Totals footer
-            long sumClosed = matrixRows.stream().mapToLong(r -> longValue(r.get("closed"))).sum();
-            long sumTotal = matrixRows.stream().mapToLong(r -> longValue(r.get("total"))).sum();
-            long sumOpen = matrixRows.stream().mapToLong(r -> longValue(r.get("open"))).sum();
-            long sumWindow = matrixRows.stream().mapToLong(r -> longValue(r.get("thisWindow"))).sum();
+            long sumTotal = categoryStatusRows.stream().mapToLong(r -> longValue(r.get("total"))).sum();
+            long sumClosed = categoryStatusRows.stream().mapToLong(r -> longValue(r.get("closed"))).sum();
+            long sumOpen = categoryStatusRows.stream().mapToLong(r -> longValue(r.get("open"))).sum();
+            long sumInProg = categoryStatusRows.stream().mapToLong(r -> longValue(r.get("inProgress"))).sum();
+            long sumCxa = categoryStatusRows.stream().mapToLong(r -> longValue(r.get("cxaToVerify"))).sum();
             sb.append("</tbody><tfoot><tr>")
-              .append("<td>Total</td>")
-              .append("<td>").append(formatPercent(percent(sumClosed, sumTotal))).append("</td>")
-              .append("<td>").append(sumClosed).append("</td>")
+              .append("<td><strong>Total</strong></td>")
               .append("<td>").append(sumTotal).append("</td>")
+              .append("<td>").append(sumClosed).append("</td>")
               .append("<td>").append(sumOpen).append("</td>")
-              .append("<td>").append(sumWindow).append("</td>")
+              .append("<td>").append(sumInProg).append("</td>")
+              .append("<td>").append(sumCxa).append("</td>")
               .append("</tr></tfoot></table>");
-
-            // Outliers
-            if (!outlierRows.isEmpty()) {
-                sb.append("<div class=\"section-heading\">CHECKLIST OUTLIERS \u2014 ITEMS EXCEEDING 30 DAYS OPEN</div>");
-                sb.append("<table><thead><tr>");
-                sb.append("<th>Checklist Reference</th><th>Status</th><th>Category</th><th>Days Open</th>");
-                sb.append("</tr></thead><tbody>");
-                for (Map<String, Object> row : outlierRows) {
-                    sb.append("<tr>")
-                      .append("<td>").append(escapeHtml(stringValue(row.get("name")))).append("</td>")
-                      .append("<td>").append(escapeHtml(stringValue(row.get("status")))).append("</td>")
-                      .append("<td>").append(escapeHtml(stringValue(row.get("category")))).append("</td>")
-                      .append("<td>").append(escapeHtml(String.valueOf(row.get("openDays")))).append("</td>")
-                      .append("</tr>");
-                }
-                sb.append("</tbody></table>");
-            }
+            sb.append("<div style=\"font-size:7pt;color:#64748b;margin-top:6px;font-style:italic;\">")
+              .append("Yellow Tag (L2B), Green Tag (L3) and Blue Tag (L4) data will populate once checklists are uploaded to CxAlloy. ")
+              .append("In Progress = checklists started but not yet signed off.")
+              .append("</div>");
         }
 
         // Insights
@@ -2296,6 +2551,24 @@ public class SavedReportService {
             sb.append("<div class=\"insight-box\"><ul>");
             insights.forEach(ins -> sb.append("<li>").append(escapeHtml(ins)).append("</li>"));
             sb.append("</ul></div>");
+        }
+
+        // Ready for CXA Review — checklist detail list
+        if (!cxaRows.isEmpty()) {
+            sb.append("<div class=\"section-heading\">READY FOR CXA REVIEW \u2014 CHECKLIST DETAIL</div>");
+            sb.append("<table><thead><tr>");
+            sb.append("<th>Checklist</th><th>Category</th><th>Assigned To</th><th>Due Date</th><th>Days Open</th>");
+            sb.append("</tr></thead><tbody>");
+            for (Map<String, Object> r : cxaRows) {
+                sb.append("<tr>")
+                  .append("<td>").append(escapeHtml(stringValue(r.get("name")))).append("</td>")
+                  .append("<td>").append(escapeHtml(stringValue(r.get("category")))).append("</td>")
+                  .append("<td>").append(escapeHtml(stringValue(r.get("assignedTo")))).append("</td>")
+                  .append("<td>").append(escapeHtml(stringValue(r.get("dueDate")))).append("</td>")
+                  .append("<td>").append(escapeHtml(String.valueOf(r.get("openDays")))).append("</td>")
+                  .append("</tr>");
+            }
+            sb.append("</tbody></table>");
         }
 
         sb.append("</div>"); // page-content
@@ -2310,29 +2583,13 @@ public class SavedReportService {
                                          SavedReport report,
                                          Map<String, Object> project) {
         Map<String, Object> sectionEntry = asMap(asMap(reportData.get("sectionData")).get("issues"));
-        List<Map<String, Object>> companyRows = asListOfMaps(sectionEntry.get("companyRows"));
         List<Map<String, Object>> priorityRows = buildIssuePriorityBreakdownRows(sectionEntry, summary);
-        long totalIssues = Math.max(1, longValue(asMap(summary.get("issues")).get("total")));
-        List<Map<String, Object>> companySummaryRows = companyRows.stream()
-                .map(row -> row(
-                        "company", stringValue(row.get("company")),
-                        "open", row.get("open"),
-                        "closed", row.get("closed"),
-                        "total", row.get("total"),
-                        "avgClosureDays", row.get("avgClosureDays"),
-                        "shareOfTotal", formatPercent(percent(longValue(row.get("total")), totalIssues))
-                )).toList();
-        List<String> insights = buildSectionInsights("issues", reportData, summary, executive);
-        boolean includeChart = booleanValue(settings.get("includeChart"), true);
-        boolean includeTable = booleanValue(settings.get("includeTable"), true);
-        boolean includeInsights = booleanValue(settings.get("includeInsights"), true);
+        List<Map<String, Object>> disciplineRows = asListOfMaps(sectionEntry.get("issuesByDiscipline"));
+        long totalIssues = longValue(asMap(summary.get("issues")).get("total"));
+        long openIssues  = longValue(asMap(summary.get("issues")).get("open"));
+        long closedIssues = longValue(asMap(summary.get("issues")).get("closed"));
+        long cxaIssues   = longValue(sectionEntry.get("issueCxaCount"));
         String projectName = firstNonBlank((String) project.get("projectName"), report.getProjectName(), report.getProjectId());
-
-        List<PdfBarValue> avgClosureBars = toNumericBarValuesFromMap(sectionEntry.get("avgClosureByCompany"), 6, true);
-        Map<String, Long> byPriority = toCountMap(sectionEntry.get("byPriority"), 8);
-        List<Map<String, Object>> priorityBarRows = byPriority.entrySet().stream()
-                .map(e -> row("week", e.getKey(), "closed", e.getValue()))
-                .toList();
 
         StringBuilder sb = new StringBuilder();
 
@@ -2345,107 +2602,350 @@ public class SavedReportService {
 
         sb.append("<div class=\"page-content\">");
 
-        // KPI overview (5 cards)
+        // Section 1: 4 colored KPI cards
         sb.append("<div class=\"section-heading\">ISSUES OVERVIEW</div>");
-        sb.append("<div class=\"kpi-grid kpi-grid--5\">");
-        sb.append(kpiCard(metricValue(summary, "issues", "total"), "Total Issues", "Logged Issues"));
-        sb.append(kpiCard(metricValue(summary, "issues", "open"), "Open Issues", longValue(asMap(summary.get("issues")).get("open")) == 0 ? "All Resolved" : "Currently Open"));
-        sb.append(kpiCard(metricValue(summary, "issues", "closed"), "Closed Issues", "100%"));
-        sb.append(kpiCard(firstNonBlank(stringValue(sectionEntry.get("averageClosureDays")), "0"), "Avg Closure (Days)", "Mean Closure Time"));
-        sb.append(kpiCard(String.valueOf(companyRows.size()), "Companies", "Issue Ownership"));
+        sb.append("<div class=\"kpi-grid kpi-grid--4\">");
+        sb.append(kpiCardColored(String.valueOf(totalIssues), "Total Issues", "Logged issues", ""));
+        sb.append(kpiCardColored(String.valueOf(openIssues),  "Open", formatPercent(percent(openIssues, totalIssues)), "kpi-card--amber"));
+        sb.append(kpiCardColored(String.valueOf(closedIssues), "Closed", formatPercent(percent(closedIssues, totalIssues)), "kpi-card--green"));
+        sb.append(kpiCardColored(String.valueOf(cxaIssues),   "CXA to Verify", "Awaiting CX sign-off", "kpi-card--cxa"));
         sb.append("</div>");
 
-        // Charts
-        if (includeChart) {
-            sb.append("<div class=\"section-heading\">CHARTS &amp; ANALYSIS</div>");
-            sb.append("<div class=\"chart-panels\">");
-            // Panel 1: avg closure time horizontal bars
-            sb.append("<div class=\"chart-panel\">");
-            sb.append("<div class=\"chart-panel__title\">Average Issue Closure Time by Company (Days)</div>");
-            sb.append(buildHBarListHtml(avgClosureBars));
-            sb.append("</div>");
-            // Panel 2: Issues by company donut
-            sb.append("<div class=\"chart-panel\">");
-            sb.append("<div class=\"chart-panel__title\">Issues by Company</div>");
-            sb.append(buildDonutSvgHtml(totalIssues - longValue(asMap(summary.get("issues")).get("open")),
-                    longValue(asMap(summary.get("issues")).get("open")),
-                    formatPercent(percent(totalIssues - longValue(asMap(summary.get("issues")).get("open")), totalIssues)),
-                    "Closed: " + (totalIssues - longValue(asMap(summary.get("issues")).get("open"))),
-                    "Open: " + longValue(asMap(summary.get("issues")).get("open"))));
-            sb.append("</div>");
-            // Panel 3: priority bucket bars
-            sb.append("<div class=\"chart-panel\">");
-            sb.append("<div class=\"chart-panel__title\">Issues by Priority Bucket</div>");
-            sb.append(buildWoWSvgHtml(priorityBarRows));
-            sb.append("</div>");
-            sb.append("</div>"); // chart-panels
+        // Section 2: Priority Breakdown matrix
+        sb.append("<div class=\"section-heading\">PRIORITY BREAKDOWN</div>");
+        sb.append("<table><thead><tr>");
+        sb.append("<th style=\"width:40%\">Priority</th><th>Open</th><th>Closed</th><th>Total</th><th>% of Total</th>");
+        sb.append("</tr></thead><tbody>");
+        long pGrandOpen = 0, pGrandClosed = 0, pGrandTotal = 0;
+        for (Map<String, Object> row : priorityRows) {
+            long rOpen   = longValue(row.get("open"));
+            long rClosed = longValue(row.get("closed"));
+            long rTotal  = longValue(row.get("total"));
+            pGrandOpen += rOpen; pGrandClosed += rClosed; pGrandTotal += rTotal;
+            String pct = rTotal == 0 ? "\u2014" : formatPercent(percent(rTotal, Math.max(1, totalIssues)));
+            sb.append("<tr>")
+              .append("<td>").append(escapeHtml(issuePriorityDisplayLabel(stringValue(row.get("priority"))))).append("</td>")
+              .append("<td style=\"color:#6b7280;font-style:italic\">").append(rOpen == 0 ? "0" : rOpen).append("</td>")
+              .append("<td style=\"color:#166534;font-weight:700\">").append(rClosed == 0 ? "0" : rClosed).append("</td>")
+              .append("<td>").append(rTotal).append("</td>")
+              .append("<td>").append(escapeHtml(pct)).append("</td>")
+              .append("</tr>");
         }
+        // "No Priority Assigned" row (issues with null/unknown priority not in order)
+        sb.append("</tbody><tfoot><tr style=\"font-weight:700\">")
+          .append("<td>Total</td>")
+          .append("<td>").append(pGrandOpen).append("</td>")
+          .append("<td>").append(pGrandClosed).append("</td>")
+          .append("<td>").append(pGrandTotal).append("</td>")
+          .append("<td>100%</td>")
+          .append("</tr></tfoot></table>");
 
-        // Issue company summary table
-        if (includeTable) {
-            sb.append("<div class=\"section-heading\">ISSUE COMPANY SUMMARY</div>");
-            sb.append("<table><thead><tr>");
-            sb.append("<th>Company</th><th>Open</th><th>Closed</th><th>Total</th><th>Avg Closure (Days)</th><th>Share of Total</th>");
-            sb.append("</tr></thead><tbody>");
-            long grandTotal = 0, grandOpen = 0, grandClosed = 0;
-            for (Map<String, Object> row : companySummaryRows) {
-                sb.append("<tr>")
-                  .append("<td>").append(escapeHtml(stringValue(row.get("company")))).append("</td>")
-                  .append("<td>").append(escapeHtml(String.valueOf(row.get("open")))).append("</td>")
-                  .append("<td>").append(escapeHtml(String.valueOf(row.get("closed")))).append("</td>")
-                  .append("<td>").append(escapeHtml(String.valueOf(row.get("total")))).append("</td>")
-                  .append("<td>").append(escapeHtml(String.valueOf(row.get("avgClosureDays")))).append("</td>")
-                  .append("<td>").append(escapeHtml(stringValue(row.get("shareOfTotal")))).append("</td>")
-                  .append("</tr>");
-                grandTotal += longValue(row.get("total"));
-                grandOpen += longValue(row.get("open"));
-                grandClosed += longValue(row.get("closed"));
-            }
-            sb.append("</tbody><tfoot><tr>")
-              .append("<td>Total</td>")
-              .append("<td>").append(grandOpen).append("</td>")
-              .append("<td>").append(grandClosed).append("</td>")
-              .append("<td>").append(grandTotal).append("</td>")
-              .append("<td>\u2014</td>")
-              .append("<td>100%</td>")
-              .append("</tr></tfoot></table>");
-
-            // Priority breakdown table
-            sb.append("<div class=\"section-heading\">PRIORITY BUCKET BREAKDOWN</div>");
-            sb.append("<table><thead><tr>");
-            sb.append("<th>Priority Bucket</th><th>Count</th><th>% of Total</th><th>Resolution Status</th>");
-            sb.append("</tr></thead><tbody>");
-            long prioGrandCount = 0;
-            for (Map<String, Object> row : priorityRows) {
-                sb.append("<tr>")
-                  .append("<td>").append(escapeHtml(stringValue(row.get("priority")))).append("</td>")
-                  .append("<td>").append(escapeHtml(String.valueOf(row.get("count")))).append("</td>")
-                  .append("<td>").append(escapeHtml(stringValue(row.get("percentage")))).append("</td>")
-                  .append("<td>").append(escapeHtml(stringValue(row.get("resolutionStatus")))).append("</td>")
-                  .append("</tr>");
-                prioGrandCount += longValue(row.get("count"));
-            }
-            sb.append("</tbody><tfoot><tr>")
-              .append("<td>Total</td><td>").append(prioGrandCount).append("</td><td>100%</td><td>0 Open</td>")
-              .append("</tr></tfoot></table>");
+        // Section 3: Issues by Equipment Type
+        sb.append("<div class=\"section-heading\">ISSUES BY EQUIPMENT TYPE</div>");
+        sb.append("<table><thead><tr>");
+        sb.append("<th style=\"width:35%\">Discipline</th><th>Open</th><th>Closed</th><th>CXA to Verify</th><th>Total</th>");
+        sb.append("</tr></thead><tbody>");
+        long dGrandOpen = 0, dGrandClosed = 0, dGrandCxa = 0, dGrandTotal = 0;
+        String[] disciplineColors = {"#3b82f6", "#22c55e", "#94a3b8"};
+        String[] disciplineNames  = {"Electrical", "Mechanical", "Other"};
+        for (int di = 0; di < disciplineNames.length; di++) {
+            String disc = disciplineNames[di];
+            String borderColor = disciplineColors[di];
+            Map<String, Object> dRow = disciplineRows.stream()
+                    .filter(r -> disc.equalsIgnoreCase(stringValue(r.get("discipline")))).findFirst()
+                    .orElse(row("open", 0L, "closed", 0L, "cxa", 0L, "total", 0L));
+            long dOpen = longValue(dRow.get("open")), dClosed = longValue(dRow.get("closed")),
+                 dCxa = longValue(dRow.get("cxa")), dTotal = longValue(dRow.get("total"));
+            dGrandOpen += dOpen; dGrandClosed += dClosed; dGrandCxa += dCxa; dGrandTotal += dTotal;
+            sb.append("<tr>")
+              .append("<td style=\"border-left:4px solid ").append(borderColor).append(";padding-left:8px;\">")
+                .append(escapeHtml(disc)).append("</td>")
+              .append("<td style=\"color:#92400e;font-weight:600\">").append(dOpen).append("</td>")
+              .append("<td style=\"color:#166534;font-weight:600\">").append(dClosed).append("</td>")
+              .append("<td style=\"color:#0e3d5c;font-weight:600\">").append(dCxa).append("</td>")
+              .append("<td>").append(dTotal).append("</td>")
+              .append("</tr>");
         }
-
-        // Insights
-        if (includeInsights && !insights.isEmpty()) {
-            sb.append("<div class=\"insight-box\"><ul>");
-            insights.forEach(ins -> sb.append("<li>").append(escapeHtml(ins)).append("</li>"));
-            sb.append("</ul></div>");
-        }
+        sb.append("</tbody><tfoot><tr style=\"font-weight:700\">")
+          .append("<td>Total</td>")
+          .append("<td>").append(dGrandOpen).append("</td>")
+          .append("<td>").append(dGrandClosed).append("</td>")
+          .append("<td>").append(dGrandCxa).append("</td>")
+          .append("<td>").append(dGrandTotal).append("</td>")
+          .append("</tr></tfoot></table>");
 
         sb.append("</div>"); // page-content
         sb.append(buildPageFooterHtml(report, executive, "ISSUES"));
         return sb.toString();
     }
 
+    private String issuePriorityDisplayLabel(String raw) {
+        if (raw == null) return "No Priority Assigned";
+        return switch (raw.trim()) {
+            case "P1 - Critical" -> "P1 \u2013 Critical / Retest Req.";
+            case "P2 - High"     -> "P2 \u2013 Major / Retest Req.";
+            case "P3 - Medium"   -> "P3 \u2013 No Retest Required";
+            case "P4 - Low"      -> "P4 \u2013 Low Priority";
+            case "Unknown"       -> "No Priority Assigned";
+            default              -> raw;
+        };
+    }
+
+    private String renderEquipmentPageHtml(Map<String, Object> settings,
+                                            Map<String, Object> reportData,
+                                            Map<String, Object> summary,
+                                            Map<String, Object> executive,
+                                            SavedReport report,
+                                            Map<String, Object> project) {
+        Map<String, Object> sectionEntry = asMap(asMap(reportData.get("sectionData")).get("equipment"));
+        List<Map<String, Object>> disciplineMatrix = asListOfMaps(sectionEntry != null ? sectionEntry.get("disciplineMatrix") : null);
+        String projectName = firstNonBlank((String) project.get("projectName"), report.getProjectName(), report.getProjectId());
+        long equipTotal = longValue(asMap(summary.get("equipment")).get("total"));
+        long elec = disciplineMatrix.stream().filter(r -> "Electrical".equals(stringValue(r.get("discipline"))) && !Boolean.TRUE.equals(r.get("isHeader"))).count();
+        long mech = disciplineMatrix.stream().filter(r -> "Mechanical".equals(stringValue(r.get("discipline"))) && !Boolean.TRUE.equals(r.get("isHeader"))).count();
+        long other = disciplineMatrix.stream().filter(r -> "Other".equals(stringValue(r.get("discipline"))) && !Boolean.TRUE.equals(r.get("isHeader"))).count();
+
+        StringBuilder sb = new StringBuilder();
+        sb.append("<div class=\"page-banner\">");
+        sb.append("<div class=\"page-banner__title\">EQUIPMENT</div>");
+        sb.append("<div class=\"page-banner__subtitle\">Equipment overview \u00b7 ").append(escapeHtml(projectName))
+          .append(" \u00b7 ").append(escapeHtml(report.getDateFrom())).append(" \u2013 ").append(escapeHtml(report.getDateTo())).append("</div>");
+        sb.append("</div>");
+        sb.append("<div class=\"page-content\">");
+
+        sb.append("<div class=\"section-heading\">EQUIPMENT OVERVIEW</div>");
+        sb.append("<div class=\"kpi-grid kpi-grid--4\">");
+        sb.append(kpiCardColored(String.valueOf(equipTotal), "Total Equipment", "In scope", ""));
+        sb.append(kpiCardColored(String.valueOf(elec), "Electrical Types", "discipline", "kpi-card--cxa"));
+        sb.append(kpiCardColored(String.valueOf(mech), "Mechanical Types", "discipline", "kpi-card--green"));
+        sb.append(kpiCardColored(String.valueOf(other), "Other Types", "discipline", "kpi-card--amber"));
+        sb.append("</div>");
+
+        // Discipline matrix table
+        sb.append("<div class=\"section-heading\">EQUIPMENT BY DISCIPLINE &amp; TYPE \u2014 CHECKLIST COMPLETION</div>");
+        sb.append("<table><thead><tr>");
+        sb.append("<th style=\"width:45%\">Equipment Type</th>");
+        sb.append("<th style=\"background:#fef2f2;color:#8b1a1a;text-align:center;\">Red (L1)</th>");
+        sb.append("<th style=\"background:#fefce8;color:#92400e;text-align:center;\">Yellow (L2)</th>");
+        sb.append("<th style=\"background:#f0fdf4;color:#166534;text-align:center;\">Green (L3)</th>");
+        sb.append("</tr></thead><tbody>");
+        for (Map<String, Object> row : disciplineMatrix) {
+            boolean isHeader = Boolean.TRUE.equals(row.get("isHeader"));
+            if (isHeader) {
+                String disc = stringValue(row.get("discipline"));
+                String headerColor = "Electrical".equals(disc) ? "#0e3d5c" : "Mechanical".equals(disc) ? "#166534" : "#5c4000";
+                sb.append("<tr style=\"background:").append(headerColor)
+                  .append(";color:#fff;font-weight:700;\">")
+                  .append("<td colspan=\"4\" style=\"padding:5px 8px;\">")
+                  .append(escapeHtml(disc)).append("</td></tr>");
+            } else {
+                sb.append("<tr>")
+                  .append("<td style=\"padding-left:16px;\">").append(escapeHtml(stringValue(row.get("equipmentType")))).append("</td>")
+                  .append("<td style=\"text-align:center;color:#8b1a1a;font-weight:600;\">").append(escapeHtml(stringValue(row.get("red")))).append("</td>")
+                  .append("<td style=\"text-align:center;color:#92400e;font-weight:600;\">").append(escapeHtml(stringValue(row.get("yellow")))).append("</td>")
+                  .append("<td style=\"text-align:center;color:#166534;font-weight:600;\">").append(escapeHtml(stringValue(row.get("green")))).append("</td>")
+                  .append("</tr>");
+            }
+        }
+        sb.append("</tbody></table>");
+
+        sb.append("</div>");
+        sb.append(buildPageFooterHtml(report, executive, "EQUIPMENT"));
+        return sb.toString();
+    }
+
+    private String renderForecastAppendixHtml(Map<String, Object> reportData,
+                                               Map<String, Object> summary,
+                                               Map<String, Object> executive,
+                                               SavedReport report,
+                                               Map<String, Object> project) {
+        Map<String, Object> executiveSummary = asMap(executive.get("executiveSummary"));
+        String projectName = firstNonBlank((String) project.get("projectName"), report.getProjectName(), report.getProjectId());
+        long totalChecklists = longValue(asMap(summary.get("checklists")).get("total"));
+        long closedChecklists = longValue(asMap(summary.get("checklists")).get("closed"));
+        long remaining = totalChecklists - closedChecklists;
+        String forecastDate = firstNonBlank(stringValue(executiveSummary.get("forecastCompletion")), "TBD");
+        String dailyRate = firstNonBlank(stringValue(executiveSummary.get("dailyRunRate")), "N/A");
+        String today = prettyDate(LocalDate.now());
+        double pct = percent(closedChecklists, totalChecklists);
+        long daysToCompletion = dailyRate.equals("N/A") ? 0 : (long) Math.ceil(remaining / Math.max(0.001, Double.parseDouble(dailyRate.replace(",", "."))));
+
+        StringBuilder sb = new StringBuilder();
+        sb.append("<div class=\"page-content\" style=\"padding-top:32px;\">");
+
+        // Title block
+        sb.append("<div style=\"font-size:22pt;font-weight:800;color:#0f172a;font-family:'Segoe UI',Arial,sans-serif;margin-bottom:4px;\">Project Completion Forecast</div>");
+        sb.append("<div style=\"font-size:9pt;color:#c9a227;font-weight:600;margin-bottom:10px;\">")
+          .append(escapeHtml(projectName)).append(" \u00b7 As at ").append(escapeHtml(today)).append("</div>");
+        sb.append("<div style=\"border-top:2px solid #c9a227;margin-bottom:16px;\"></div>");
+
+        // 4 KPI cards
+        sb.append("<div class=\"kpi-grid kpi-grid--4\" style=\"margin-bottom:18px;\">");
+        sb.append(kpiCardColored(String.valueOf(totalChecklists), "Total Checklists", "Project scope", ""));
+        sb.append(kpiCardColored(String.valueOf(closedChecklists), "Completed", formatPercent(pct), "kpi-card--green"));
+        sb.append(kpiCardColored(String.valueOf(remaining), "Remaining", formatPercent(100.0 - pct), "kpi-card--amber"));
+        sb.append(kpiCardColored(forecastDate, "Forecast Date", "At " + dailyRate + " tags/day", "kpi-card--inprogress"));
+        sb.append("</div>");
+
+        // How the forecast is calculated
+        sb.append("<div style=\"background:#1a2744;color:#fff;padding:6px 12px;font-size:8pt;font-weight:700;letter-spacing:0.05em;margin-bottom:0;\">HOW THE FORECAST IS CALCULATED</div>");
+        sb.append("<div style=\"border:1px solid #dde4ef;padding:12px 14px;margin-bottom:14px;font-size:8pt;color:#334155;line-height:1.8;\">");
+        sb.append("<div style=\"margin-bottom:6px;\">The forecast date is generated automatically:</div>");
+        sb.append("<div><b>Step 1.</b> Delivery pace: checklists closed \u00f7 elapsed days = <b>").append(escapeHtml(dailyRate)).append(" tags/day</b>.</div>");
+        sb.append("<div><b>Step 2.</b> Remaining: ").append(totalChecklists).append(" \u2013 ").append(closedChecklists).append(" = <b>").append(remaining).append(" checklists</b>.</div>");
+        sb.append("<div><b>Step 3.</b> Days to completion: ").append(remaining).append(" \u00f7 ").append(escapeHtml(dailyRate)).append(" \u2248 <b>").append(daysToCompletion).append(" working days</b>.</div>");
+        sb.append("<div><b>Step 4.</b> Estimated end: ").append(escapeHtml(today)).append(" + ").append(daysToCompletion).append(" days \u2248 <b>").append(escapeHtml(forecastDate)).append("</b>.</div>");
+        sb.append("</div>");
+
+        // Important Caveat
+        sb.append("<div style=\"background:#fef9ec;border:1px solid #f59e0b;padding:10px 14px;margin-bottom:16px;font-size:8pt;color:#78350f;\">");
+        sb.append("<b>Important Caveat:</b> This forecast may be misleading if not all checklists have been uploaded. ");
+        sb.append("As additional tags are registered the total count increases and the forecast shifts. ");
+        sb.append("Review alongside confirmed scope completeness.");
+        sb.append("</div>");
+
+        // Completion Trajectory chart
+        sb.append("<div style=\"background:#1a2744;color:#fff;padding:6px 12px;font-size:8pt;font-weight:700;letter-spacing:0.05em;margin-bottom:0;\">COMPLETION TRAJECTORY</div>");
+        sb.append("<div style=\"border:1px solid #dde4ef;padding:10px 12px;\">");
+        sb.append(buildTrajectoryChartSvg(reportData, summary, forecastDate));
+        sb.append("</div>");
+        sb.append("<div style=\"font-size:7pt;color:#64748b;margin-top:4px;\">Solid = actual progress. Dashed = forecast at current pace.</div>");
+
+        sb.append("</div>");
+        sb.append(buildPageFooterHtml(report, executive, "APPENDIX"));
+        return sb.toString();
+    }
+
+    private String buildTrajectoryChartSvg(Map<String, Object> reportData,
+                                            Map<String, Object> summary,
+                                            String forecastDateStr) {
+        // Build cumulative actual progress from week-over-week data
+        Map<String, Object> checklistsEntry = asMap(asMap(reportData.get("sectionData")).get("checklists"));
+        List<Map<String, Object>> weekRows = asListOfMaps(checklistsEntry != null ? checklistsEntry.get("weekOverWeek") : null);
+        long total = longValue(asMap(summary.get("checklists")).get("total"));
+        long closed = longValue(asMap(summary.get("checklists")).get("closed"));
+        if (total == 0) total = 1;
+
+        int svgW = 540, svgH = 210;
+        int padL = 38, padR = 12, padT = 20, padB = 38;
+        int chartW = svgW - padL - padR;
+        int chartH = svgH - padT - padB;
+        int bottom = padT + chartH;
+
+        // Parse forecast date
+        LocalDate today = LocalDate.now();
+        LocalDate forecastEnd = today.plusDays(90);
+        try {
+            forecastEnd = LocalDate.parse(forecastDateStr, DateTimeFormatter.ofPattern("d MMM yyyy"));
+        } catch (Exception ignored) {
+            try { forecastEnd = LocalDate.parse(forecastDateStr, DateTimeFormatter.ofPattern("MMM yyyy")); } catch (Exception ignored2) {}
+        }
+
+        // Determine date range for X axis
+        LocalDate xStart = today.minusMonths(3);
+        LocalDate xEnd = forecastEnd.plusDays(15);
+        long totalDays = Math.max(1, java.time.temporal.ChronoUnit.DAYS.between(xStart, xEnd));
+
+        // X axis tick months
+        List<LocalDate> xTicks = new java.util.ArrayList<>();
+        LocalDate tick = xStart.withDayOfMonth(1);
+        while (!tick.isAfter(xEnd)) { xTicks.add(tick); tick = tick.plusMonths(2); }
+
+        // Actual data points: cumulative closed from week rows
+        List<double[]> actualPoints = new java.util.ArrayList<>();
+        long cumClosed = 0;
+        for (Map<String, Object> wr : weekRows) {
+            cumClosed += longValue(wr.get("closed"));
+            // use week label as date (approximate)
+            String label = stringValue(wr.get("week"));
+            try {
+                LocalDate wdate = LocalDate.parse(label + " " + today.getYear(), DateTimeFormatter.ofPattern("d MMM yyyy"));
+                if (!wdate.isBefore(xStart) && !wdate.isAfter(today)) {
+                    double x = (double) java.time.temporal.ChronoUnit.DAYS.between(xStart, wdate) / totalDays * chartW + padL;
+                    double y = padT + chartH - ((double) Math.min(cumClosed, total) / total) * chartH;
+                    actualPoints.add(new double[]{x, y});
+                }
+            } catch (Exception ignored) {}
+        }
+        // Add today's actual point
+        double todayX = (double) java.time.temporal.ChronoUnit.DAYS.between(xStart, today) / totalDays * chartW + padL;
+        double todayActY = padT + chartH - ((double) closed / total) * chartH;
+        actualPoints.add(new double[]{todayX, todayActY});
+
+        // Forecast line: from today to forecastEnd
+        double forecastEndX = (double) java.time.temporal.ChronoUnit.DAYS.between(xStart, forecastEnd) / totalDays * chartW + padL;
+
+        StringBuilder svg = new StringBuilder();
+        svg.append("<svg viewBox=\"0 0 ").append(svgW).append(" ").append(svgH)
+           .append("\" width=\"100%\" xmlns=\"http://www.w3.org/2000/svg\" style=\"display:block;\">");
+
+        // Y axis gridlines (0%, 25%, 50%, 75%, 100%)
+        for (int pct = 0; pct <= 100; pct += 25) {
+            double gy = padT + chartH - (pct / 100.0) * chartH;
+            svg.append(String.format(Locale.US, "<line x1=\"%d\" y1=\"%.1f\" x2=\"%d\" y2=\"%.1f\" stroke=\"#dde4ef\" stroke-width=\"0.8\" stroke-dasharray=\"3,2\"/>", padL, gy, padL + chartW, gy));
+            svg.append(String.format(Locale.US, "<text x=\"%d\" y=\"%.1f\" text-anchor=\"end\" font-size=\"7\" fill=\"#64748b\">%d%%</text>", padL - 4, gy + 3, pct));
+        }
+        // Axes
+        svg.append(String.format(Locale.US, "<line x1=\"%d\" y1=\"%d\" x2=\"%d\" y2=\"%d\" stroke=\"#334155\" stroke-width=\"1\"/>", padL, padT, padL, bottom));
+        svg.append(String.format(Locale.US, "<line x1=\"%d\" y1=\"%d\" x2=\"%d\" y2=\"%d\" stroke=\"#334155\" stroke-width=\"1\"/>", padL, bottom, padL + chartW, bottom));
+        // Y axis label
+        svg.append(String.format(Locale.US, "<text transform=\"rotate(-90)\" x=\"-%d\" y=\"13\" text-anchor=\"middle\" font-size=\"7.5\" font-weight=\"700\" fill=\"#334155\">Completion</text>", padT + chartH / 2));
+
+        // X axis ticks
+        for (LocalDate xt : xTicks) {
+            double gx = (double) java.time.temporal.ChronoUnit.DAYS.between(xStart, xt) / totalDays * chartW + padL;
+            String lbl = xt.format(DateTimeFormatter.ofPattern("MMM yy"));
+            svg.append(String.format(Locale.US, "<text x=\"%.1f\" y=\"%d\" text-anchor=\"middle\" font-size=\"6.5\" fill=\"#64748b\">%s</text>", gx, bottom + 11, escapeHtml(lbl)));
+        }
+
+        // Forecast dashed line (today actual → forecastEnd @ 100%)
+        svg.append(String.format(Locale.US,
+            "<line x1=\"%.1f\" y1=\"%.1f\" x2=\"%.1f\" y2=\"%.1f\" stroke=\"#c9a227\" stroke-width=\"1.5\" stroke-dasharray=\"5,3\"/>",
+            todayX, todayActY, forecastEndX, (double) padT));
+
+        // Forecast end label
+        svg.append(String.format(Locale.US,
+            "<text x=\"%.1f\" y=\"%d\" text-anchor=\"middle\" font-size=\"6.5\" fill=\"#c9a227\" font-weight=\"700\">%s</text>",
+            Math.min(forecastEndX, svgW - padR - 2.0), padT - 4, escapeHtml(forecastEnd.format(DateTimeFormatter.ofPattern("MMM yyyy")))));
+
+        // Actual progress polyline
+        if (!actualPoints.isEmpty()) {
+            StringBuilder pts = new StringBuilder();
+            for (double[] pt : actualPoints) pts.append(String.format(Locale.US, "%.1f,%.1f ", pt[0], pt[1]));
+            svg.append("<polyline points=\"").append(pts).append("\" fill=\"none\" stroke=\"#0f172a\" stroke-width=\"2\"/>");
+        }
+
+        // Today vertical line
+        svg.append(String.format(Locale.US,
+            "<line x1=\"%.1f\" y1=\"%d\" x2=\"%.1f\" y2=\"%d\" stroke=\"#ef4444\" stroke-width=\"1\" stroke-dasharray=\"4,3\"/>",
+            todayX, padT, todayX, bottom));
+        svg.append(String.format(Locale.US,
+            "<text x=\"%.1f\" y=\"%d\" text-anchor=\"middle\" font-size=\"6\" fill=\"#ef4444\" font-weight=\"700\">Today</text>",
+            todayX, bottom + 22));
+        svg.append(String.format(Locale.US,
+            "<text x=\"%.1f\" y=\"%d\" text-anchor=\"middle\" font-size=\"6\" fill=\"#ef4444\">%s</text>",
+            todayX, bottom + 30, escapeHtml(today.format(DateTimeFormatter.ofPattern("d MMM")))));
+
+        // Legend
+        int lx = padL + 8, ly = padT + 6;
+        svg.append(String.format("<line x1=\"%d\" y1=\"%d\" x2=\"%d\" y2=\"%d\" stroke=\"#0f172a\" stroke-width=\"2\"/>", lx, ly + 4, lx + 18, ly + 4));
+        svg.append(String.format("<text x=\"%d\" y=\"%d\" font-size=\"7\" fill=\"#334155\">Actual</text>", lx + 22, ly + 7));
+        svg.append(String.format("<line x1=\"%d\" y1=\"%d\" x2=\"%d\" y2=\"%d\" stroke=\"#c9a227\" stroke-width=\"1.5\" stroke-dasharray=\"4,2\"/>", lx, ly + 18, lx + 18, ly + 18));
+        svg.append(String.format("<text x=\"%d\" y=\"%d\" font-size=\"7\" fill=\"#334155\">Forecast</text>", lx + 22, ly + 21));
+
+        svg.append("</svg>");
+        return svg.toString();
+    }
+
     // ─── SVG & HTML HELPERS ───────────────────────────────────────────────────
 
     private String kpiCard(String number, String label, String sub) {
-        StringBuilder s = new StringBuilder("<div class=\"kpi-card\">");
+        return kpiCardColored(number, label, sub, "");
+    }
+
+    private String kpiCardColored(String number, String label, String sub, String extraClass) {
+        String cls = "kpi-card" + (StringUtils.hasText(extraClass) ? " " + extraClass : "");
+        StringBuilder s = new StringBuilder("<div class=\"").append(cls).append("\">");
         s.append("<div class=\"kpi-card__number\">").append(escapeHtml(number)).append("</div>");
         s.append("<div class=\"kpi-card__label\">").append(escapeHtml(label)).append("</div>");
         if (StringUtils.hasText(sub)) {
@@ -2488,50 +2988,72 @@ public class SavedReportService {
         if (weekRows == null || weekRows.isEmpty()) {
             return "<div style=\"font-size:7.5pt;color:#94a3b8;padding:10px 0;\">No weekly data available.</div>";
         }
-        int svgW = 240, svgH = 120;
-        int padL = 20, padB = 22, padT = 14, padR = 8;
+        // Full-width viewBox: A4 content width ≈ 560 units, height 200 for a tall chart
+        int svgW = 560, svgH = 200;
+        int padL = 30, padB = 28, padT = 18, padR = 10;
         int chartW = svgW - padL - padR;
         int chartH = svgH - padT - padB;
         long maxVal = weekRows.stream().mapToLong(r -> longValue(r.get("closed"))).max().orElse(1);
         if (maxVal == 0) maxVal = 1;
         int n = weekRows.size();
-        double barW = Math.max(4, (double) chartW / n * 0.55);
-        double gap = n <= 1 ? 0 : (double) chartW / n;
+        double gap = n <= 1 ? chartW : (double) chartW / n;
+        double barW = Math.max(8, gap * 0.62);
 
         StringBuilder svg = new StringBuilder();
+        // width="100%" + explicit viewBox fills the container; height auto-scales proportionally
         svg.append("<svg viewBox=\"0 0 ").append(svgW).append(" ").append(svgH)
-           .append("\" width=\"100%\" height=\"").append(svgH).append("\" xmlns=\"http://www.w3.org/2000/svg\">");
-        // Grid lines
-        for (int g = 0; g <= 3; g++) {
-            double gy = padT + chartH * g / 3.0;
+           .append("\" width=\"100%\" xmlns=\"http://www.w3.org/2000/svg\" style=\"display:block;\">");
+
+        // Y-axis grid lines + value labels
+        int gridLines = 4;
+        for (int g = 0; g <= gridLines; g++) {
+            double gy = padT + chartH * g / (double) gridLines;
+            long gridVal = maxVal - (maxVal * g / gridLines);
             svg.append("<line x1=\"").append(padL).append("\" y1=\"").append(String.format(Locale.US, "%.1f", gy))
                .append("\" x2=\"").append(svgW - padR).append("\" y2=\"").append(String.format(Locale.US, "%.1f", gy))
-               .append("\" stroke=\"#e2e8f0\" stroke-width=\"0.5\"/>");
+               .append("\" stroke=\"#dde4ef\" stroke-width=\"0.8\"/>");
+            svg.append("<text x=\"").append(padL - 4)
+               .append("\" y=\"").append(String.format(Locale.US, "%.1f", gy + 3.5))
+               .append("\" text-anchor=\"end\" font-size=\"8\" fill=\"#94a3b8\" font-family=\"'Segoe UI',Arial,sans-serif\">")
+               .append(gridVal).append("</text>");
         }
+
+        // Bars
         for (int i = 0; i < n; i++) {
             Map<String, Object> row = weekRows.get(i);
             long val = longValue(row.get("closed"));
             double bh = (double) val / maxVal * chartH;
             double bx = padL + gap * i + (gap - barW) / 2.0;
             double by = padT + chartH - bh;
+
+            // Bar fill with a subtle gradient-style shade on the right side
             svg.append("<rect x=\"").append(String.format(Locale.US, "%.1f", bx))
                .append("\" y=\"").append(String.format(Locale.US, "%.1f", by))
                .append("\" width=\"").append(String.format(Locale.US, "%.1f", barW))
-               .append("\" height=\"").append(String.format(Locale.US, "%.1f", Math.max(1, bh)))
-               .append("\" fill=\"#1a2744\" rx=\"1\"/>");
+               .append("\" height=\"").append(String.format(Locale.US, "%.1f", Math.max(2, bh)))
+               .append("\" fill=\"#1a2744\" rx=\"2\"/>");
+            // Accent highlight strip on left edge
+            svg.append("<rect x=\"").append(String.format(Locale.US, "%.1f", bx))
+               .append("\" y=\"").append(String.format(Locale.US, "%.1f", by))
+               .append("\" width=\"3\" height=\"").append(String.format(Locale.US, "%.1f", Math.max(2, bh)))
+               .append("\" fill=\"#c9a227\" rx=\"1\"/>");
+
+            // Value label above bar
             if (val > 0) {
                 svg.append("<text x=\"").append(String.format(Locale.US, "%.1f", bx + barW / 2))
-                   .append("\" y=\"").append(String.format(Locale.US, "%.1f", by - 2))
-                   .append("\" text-anchor=\"middle\" font-size=\"7\" fill=\"#0f172a\" font-family=\"'Segoe UI',Arial,sans-serif\">")
+                   .append("\" y=\"").append(String.format(Locale.US, "%.1f", by - 4))
+                   .append("\" text-anchor=\"middle\" font-size=\"9\" font-weight=\"800\" fill=\"#1a2744\" font-family=\"'Segoe UI',Arial,sans-serif\">")
                    .append(val).append("</text>");
             }
+
+            // X-axis label (week ending Friday date)
             String weekLabel = stringValue(row.get("week"));
-            if (weekLabel.length() > 5) weekLabel = weekLabel.substring(weekLabel.length() - 5);
             svg.append("<text x=\"").append(String.format(Locale.US, "%.1f", bx + barW / 2))
                .append("\" y=\"").append(svgH - 6)
-               .append("\" text-anchor=\"middle\" font-size=\"6.5\" fill=\"#64748b\" font-family=\"'Segoe UI',Arial,sans-serif\">")
+               .append("\" text-anchor=\"middle\" font-size=\"8.5\" fill=\"#64748b\" font-family=\"'Segoe UI',Arial,sans-serif\">")
                .append(escapeHtml(weekLabel)).append("</text>");
         }
+
         svg.append("</svg>");
         return svg.toString();
     }
@@ -2638,6 +3160,10 @@ public class SavedReportService {
                     renderIssuesPdfSection(writer, settings, reportData, summary, executive, accent);
                     continue;
                 }
+                if ("equipment".equals(sectionId)) {
+                    renderEquipmentPdfSection(writer, settings, reportData, summary, executive, accent);
+                    continue;
+                }
 
                 writer.section(resolveSectionTitle(sectionId, settings), accent, sectionBlocksLabel(sectionId, settings));
 
@@ -2684,6 +3210,10 @@ public class SavedReportService {
                     writer.noteBox("No output blocks are enabled for this section.");
                 }
             }
+
+            // Appendix: Project Completion Forecast
+            writer.newPage();
+            renderForecastAppendixPdfSection(writer, reportData, summary, executive);
 
             writer.close();
             document.save(output);
@@ -2814,54 +3344,30 @@ public class SavedReportService {
                                            Map<String, Object> executive,
                                            Color accent) throws IOException {
         Map<String, Object> sectionEntry = asMap(asMap(reportData.get("sectionData")).get("checklists"));
-        Map<String, Object> tagVelocity = asMap(executive.get("tagVelocity"));
-        List<Map<String, Object>> completionRows = asListOfMaps(sectionEntry.get("completionByCategory"));
         List<Map<String, Object>> weekRows = asListOfMaps(sectionEntry.get("weekOverWeek"));
-        List<Map<String, Object>> outlierRows = asListOfMaps(sectionEntry.get("outlierRows"));
-        List<Map<String, Object>> deliveryRows = asListOfMaps(executive.get("keyProjectDelivery"));
-        Map<String, Long> activeTags = toCountMap(sectionEntry.get("byTag"), 6);
-        String mostActiveTag = activeTags.isEmpty() ? "N/A" : activeTags.entrySet().stream().max(Map.Entry.comparingByValue()).map(Map.Entry::getKey).orElse("N/A");
-        Map<String, Long> closedInWindowByTag = deliveryRows.stream()
-                .collect(Collectors.toMap(
-                        row -> stringValue(row.get("tagLevel")),
-                        row -> longValue(row.get("closedInWindow")),
-                        (left, right) -> left,
-                        LinkedHashMap::new
-                ));
-        List<Map<String, Object>> matrixRows = completionRows.stream()
-                .map(row -> row(
-                        "category", stringValue(row.get("category")),
-                        "percentage", stringValue(row.get("percentage")),
-                        "closed", row.get("closed"),
-                        "total", row.get("total"),
-                        "open", Math.max(0, longValue(row.get("total")) - longValue(row.get("closed"))),
-                        "thisWindow", closedInWindowByTag.getOrDefault(stringValue(row.get("category")), 0L)
-                ))
-                .toList();
+        List<Map<String, Object>> categoryStatusRows = asListOfMaps(sectionEntry.get("categoryStatusRows"));
         List<String> insights = buildSectionInsights("checklists", reportData, summary, executive);
+        long checklistTotal = longValue(asMap(summary.get("checklists")).get("total"));
+        long checklistClosed = longValue(asMap(summary.get("checklists")).get("closed"));
+        long checklistInProgress = longValue(sectionEntry.get("inProgressCount"));
+        long checklistCxaToVerify = longValue(sectionEntry.get("cxaToVerifyCount"));
+        long checklistOpen = Math.max(0L, checklistTotal - checklistClosed - checklistInProgress - checklistCxaToVerify);
 
-        writer.sectionBanner("CHECKLISTS", "Checklist performance, closure velocity, and open outliers");
+        writer.sectionBanner("CHECKLISTS", "Checklist closure by category, weekly actuals, and status breakdown");
         writer.headingRule("CHECKLIST OVERVIEW");
         writer.metricGrid(List.of(
-                new PdfMetric("Total Checklists", metricValue(summary, "checklists", "total"), "project scope", accent),
-                new PdfMetric("Closed", metricValue(summary, "checklists", "closed"), "completed", new Color(22, 163, 74)),
-                new PdfMetric("Open", metricValue(summary, "checklists", "open"), "remaining", new Color(239, 68, 68)),
-                new PdfMetric("Avg Tags / Week", stringValue(tagVelocity.get("avgPerWeek")), "delivery pace", new Color(59, 130, 246)),
-                new PdfMetric("Most Active Tag", mostActiveTag, stringValue(tagVelocity.get("closedInWindow")) + " moved this window", new Color(14, 165, 233))
+                new PdfMetric("Total Checklists", String.valueOf(checklistTotal), "project scope", accent),
+                new PdfMetric("Closed", String.valueOf(checklistClosed), formatPercent(percent(checklistClosed, checklistTotal)), new Color(22, 163, 74)),
+                new PdfMetric("In Progress", String.valueOf(checklistInProgress), formatPercent(percent(checklistInProgress, checklistTotal)), new Color(234, 179, 8)),
+                new PdfMetric("Open", String.valueOf(checklistOpen), formatPercent(percent(checklistOpen, checklistTotal)), new Color(239, 68, 68)),
+                new PdfMetric("Ready for CXA Review", String.valueOf(checklistCxaToVerify), "Awaiting CX sign-off", new Color(14, 165, 233))
         ), 5, 50f);
 
         if (booleanValue(settings.get("includeChart"), true)) {
-            writer.headingRule("CHARTS & ANALYSIS");
+            writer.headingRule("WEEK-OVER-WEEK CHECKLIST CLOSURE");
             writer.chartPanels(List.of(
                     new PdfChartBlock(
-                            "Checklist Completion by Category",
-                            toPercentBarValues(completionRows, "category", "percentageValue", "percentage"),
-                            accent,
-                            "No checklist category progress data is available.",
-                            PdfChartStyle.HORIZONTAL_BAR
-                    ),
-                    new PdfChartBlock(
-                            "WoW Checklist Completion",
+                            "Weekly Actuals (weeks ending Friday)",
                             toCountBarValues(weekRows, "week", "closed"),
                             new Color(59, 130, 246),
                             "No weekly checklist completions were recorded.",
@@ -2871,31 +3377,21 @@ public class SavedReportService {
         }
 
         if (booleanValue(settings.get("includeTable"), true)) {
-            writer.headingRule("CATEGORY COMPLETION MATRIX");
+            writer.headingRule("CHECKLISTS BY CATEGORY STATUS");
             writer.table(
-                    matrixRows,
-                    List.of("category", "percentage", "closed", "total", "open", "thisWindow"),
+                    categoryStatusRows,
+                    List.of("category", "total", "closed", "open", "inProgress", "cxaToVerify"),
                     Map.of(
                             "category", "Category",
-                            "percentage", "% Complete",
-                            "closed", "Closed",
                             "total", "Total",
+                            "closed", "Closed",
                             "open", "Open",
-                            "thisWindow", "This Window"
+                            "inProgress", "In Progress",
+                            "cxaToVerify", "Ready for CXA Review"
                     ),
-                    new float[]{0.30f, 0.13f, 0.12f, 0.12f, 0.11f, 0.22f},
-                    Math.max(6, matrixRows.size())
+                    new float[]{0.30f, 0.14f, 0.14f, 0.14f, 0.14f, 0.14f},
+                    Math.max(6, categoryStatusRows.size())
             );
-            if (!outlierRows.isEmpty()) {
-                writer.headingRule("CHECKLIST OUTLIERS - ITEMS EXCEEDING 30 DAYS OPEN");
-                writer.table(
-                        outlierRows,
-                        List.of("name", "status", "category", "openDays"),
-                        Map.of("name", "Checklist", "status", "Status", "category", "Category", "openDays", "Days Open"),
-                        new float[]{0.48f, 0.14f, 0.22f, 0.16f},
-                        Math.max(6, outlierRows.size())
-                );
-            }
         }
 
         if (booleanValue(settings.get("includeInsights"), true) && !insights.isEmpty()) {
@@ -2910,113 +3406,168 @@ public class SavedReportService {
                                         Map<String, Object> executive,
                                         Color accent) throws IOException {
         Map<String, Object> sectionEntry = asMap(asMap(reportData.get("sectionData")).get("issues"));
-        List<Map<String, Object>> companyRows = asListOfMaps(sectionEntry.get("companyRows"));
         List<Map<String, Object>> priorityRows = buildIssuePriorityBreakdownRows(sectionEntry, summary);
-        long totalIssues = Math.max(1, longValue(asMap(summary.get("issues")).get("total")));
-        List<Map<String, Object>> companySummaryRows = companyRows.stream()
-                .map(row -> row(
-                        "company", stringValue(row.get("company")),
-                        "open", row.get("open"),
-                        "closed", row.get("closed"),
-                        "total", row.get("total"),
-                        "avgClosureDays", row.get("avgClosureDays"),
-                        "shareOfTotal", formatPercent(percent(longValue(row.get("total")), totalIssues))
-                ))
-                .toList();
-        List<String> insights = buildSectionInsights("issues", reportData, summary, executive);
+        List<Map<String, Object>> disciplineRows = asListOfMaps(sectionEntry.get("issuesByDiscipline"));
+        long totalIssues = longValue(asMap(summary.get("issues")).get("total"));
+        long openIssues  = longValue(asMap(summary.get("issues")).get("open"));
+        long closedIssues = longValue(asMap(summary.get("issues")).get("closed"));
+        long cxaIssues   = longValue(sectionEntry.get("issueCxaCount"));
 
-        writer.sectionBanner("ISSUES", "Issue ownership, closure timing, and priority distribution");
+        writer.sectionBanner("ISSUES", "Issue priority breakdown and equipment type analysis");
         writer.headingRule("ISSUES OVERVIEW");
         writer.metricGrid(List.of(
-                new PdfMetric("Total Issues", metricValue(summary, "issues", "total"), "logged issues", accent),
-                new PdfMetric("Open Issues", metricValue(summary, "issues", "open"), "currently open", new Color(239, 68, 68)),
-                new PdfMetric("Closed Issues", metricValue(summary, "issues", "closed"), "closed out", new Color(22, 163, 74)),
-                new PdfMetric("Avg Closure (Days)", stringValue(sectionEntry.get("averageClosureDays")), "mean closure time", new Color(99, 102, 241)),
-                new PdfMetric("Companies", String.valueOf(companyRows.size()), "issue ownership", new Color(14, 165, 233))
-        ), 5, 50f);
+                new PdfMetric("Total Issues", String.valueOf(totalIssues), "logged issues", accent),
+                new PdfMetric("Open", String.valueOf(openIssues), formatPercent(percent(openIssues, Math.max(1, totalIssues))), new Color(180, 83, 9)),
+                new PdfMetric("Closed", String.valueOf(closedIssues), formatPercent(percent(closedIssues, Math.max(1, totalIssues))), new Color(22, 163, 74)),
+                new PdfMetric("CXA to Verify", String.valueOf(cxaIssues), "Awaiting CX sign-off", new Color(14, 61, 92))
+        ), 4, 56f);
 
-        if (booleanValue(settings.get("includeChart"), true)) {
-            writer.headingRule("CHARTS & ANALYSIS");
-            writer.chartPanels(List.of(
-                    new PdfChartBlock(
-                            "Open Issues by Company",
-                            toCountBarValuesFromMap(sectionEntry.get("openByCompany"), 6),
-                            accent,
-                            "There are no open issues in the current snapshot.",
-                            PdfChartStyle.HORIZONTAL_BAR
-                    ),
-                    new PdfChartBlock(
-                            "Average Issue Closure (Days)",
-                            toNumericBarValuesFromMap(sectionEntry.get("avgClosureByCompany"), 6, true),
-                            new Color(99, 102, 241),
-                            "Closure timing is not available for this issue set.",
-                            PdfChartStyle.HORIZONTAL_BAR
-                    )
-            ));
-        }
+        // Priority Breakdown table
+        List<Map<String, Object>> priorityDisplayRows = priorityRows.stream()
+                .map(r -> row(
+                        "priority", issuePriorityDisplayLabel(stringValue(r.get("priority"))),
+                        "open", r.get("open"),
+                        "closed", r.get("closed"),
+                        "total", r.get("total"),
+                        "percentage", r.get("percentage")
+                ))
+                .toList();
+        writer.headingRule("PRIORITY BREAKDOWN");
+        writer.table(
+                priorityDisplayRows,
+                List.of("priority", "open", "closed", "total", "percentage"),
+                Map.of("priority", "Priority", "open", "Open", "closed", "Closed", "total", "Total", "percentage", "% of Total"),
+                new float[]{0.40f, 0.15f, 0.15f, 0.15f, 0.15f},
+                Math.max(5, priorityDisplayRows.size())
+        );
 
-        if (booleanValue(settings.get("includeTable"), true)) {
-            writer.headingRule("ISSUE COMPANY SUMMARY");
-            writer.table(
-                    companySummaryRows,
-                    List.of("company", "open", "closed", "total", "avgClosureDays", "shareOfTotal"),
-                    Map.of(
-                            "company", "Company",
-                            "open", "Open",
-                            "closed", "Closed",
-                            "total", "Total",
-                            "avgClosureDays", "Avg Closure (Days)",
-                            "shareOfTotal", "Share of Total"
-                    ),
-                    new float[]{0.28f, 0.10f, 0.10f, 0.10f, 0.18f, 0.24f},
-                    Math.max(6, companySummaryRows.size())
-            );
-            writer.headingRule("PRIORITY BUCKET BREAKDOWN");
-            writer.table(
-                    priorityRows,
-                    List.of("priority", "count", "percentage", "resolutionStatus"),
-                    Map.of(
-                            "priority", "Priority Bucket",
-                            "count", "Count",
-                            "percentage", "% of Total",
-                            "resolutionStatus", "Resolution Status"
-                    ),
-                    new float[]{0.38f, 0.12f, 0.16f, 0.34f},
-                    Math.max(5, priorityRows.size())
-            );
-        }
+        // Issues by Equipment Type (Discipline)
+        List<Map<String, Object>> disciplineDisplayRows = List.of("Electrical", "Mechanical", "Other").stream()
+                .map(disc -> {
+                    Map<String, Object> found = disciplineRows.stream()
+                            .filter(r -> disc.equalsIgnoreCase(stringValue(r.get("discipline")))).findFirst()
+                            .orElse(row("open", 0L, "closed", 0L, "cxa", 0L, "total", 0L));
+                    return row("discipline", disc, "open", found.get("open"), "closed", found.get("closed"),
+                               "cxa", found.get("cxa"), "total", found.get("total"));
+                })
+                .toList();
+        writer.headingRule("ISSUES BY EQUIPMENT TYPE");
+        writer.table(
+                disciplineDisplayRows,
+                List.of("discipline", "open", "closed", "cxa", "total"),
+                Map.of("discipline", "Discipline", "open", "Open", "closed", "Closed", "cxa", "CXA to Verify", "total", "Total"),
+                new float[]{0.35f, 0.16f, 0.16f, 0.17f, 0.16f},
+                Math.max(3, disciplineDisplayRows.size())
+        );
+    }
 
-        if (booleanValue(settings.get("includeInsights"), true) && !insights.isEmpty()) {
-            writer.insightPanel("Issue Insights", insights, accent);
+    private void renderEquipmentPdfSection(PdfWriter writer,
+                                            Map<String, Object> settings,
+                                            Map<String, Object> reportData,
+                                            Map<String, Object> summary,
+                                            Map<String, Object> executive,
+                                            Color accent) throws IOException {
+        Map<String, Object> sectionEntry = asMap(asMap(reportData.get("sectionData")).get("equipment"));
+        List<Map<String, Object>> disciplineMatrix = asListOfMaps(sectionEntry != null ? sectionEntry.get("disciplineMatrix") : null);
+        long equipTotal = longValue(asMap(summary.get("equipment")).get("total"));
+        long elec = disciplineMatrix.stream().filter(r -> "Electrical".equals(stringValue(r.get("discipline"))) && !Boolean.TRUE.equals(r.get("isHeader"))).count();
+        long mech = disciplineMatrix.stream().filter(r -> "Mechanical".equals(stringValue(r.get("discipline"))) && !Boolean.TRUE.equals(r.get("isHeader"))).count();
+        long other = disciplineMatrix.stream().filter(r -> "Other".equals(stringValue(r.get("discipline"))) && !Boolean.TRUE.equals(r.get("isHeader"))).count();
+
+        writer.sectionBanner("EQUIPMENT", "Equipment inventory breakdown by discipline and type");
+        writer.headingRule("EQUIPMENT OVERVIEW");
+        writer.metricGrid(List.of(
+                new PdfMetric("Total Equipment", String.valueOf(equipTotal), "in scope", accent),
+                new PdfMetric("Electrical Types", String.valueOf(elec), "discipline", new Color(14, 61, 92)),
+                new PdfMetric("Mechanical Types", String.valueOf(mech), "discipline", new Color(22, 163, 74)),
+                new PdfMetric("Other Types", String.valueOf(other), "discipline", new Color(180, 83, 9))
+        ), 4, 56f);
+
+        writer.headingRule("EQUIPMENT BY DISCIPLINE & TYPE — CHECKLIST COMPLETION");
+        // Flatten matrix — skip header rows (represent as bold rows in PDF via discipline grouping)
+        List<Map<String, Object>> typeRows = disciplineMatrix.stream()
+                .filter(r -> !Boolean.TRUE.equals(r.get("isHeader")))
+                .map(r -> row(
+                        "type", stringValue(r.get("discipline")) + " › " + stringValue(r.get("equipmentType")),
+                        "red", r.get("red"),
+                        "yellow", r.get("yellow"),
+                        "green", r.get("green")
+                ))
+                .toList();
+        writer.table(
+                typeRows,
+                List.of("type", "red", "yellow", "green"),
+                Map.of("type", "Equipment Type", "red", "Red (L1)", "yellow", "Yellow (L2)", "green", "Green (L3)"),
+                new float[]{0.46f, 0.18f, 0.18f, 0.18f},
+                Math.max(6, typeRows.size())
+        );
+    }
+
+    private void renderForecastAppendixPdfSection(PdfWriter writer,
+                                                   Map<String, Object> reportData,
+                                                   Map<String, Object> summary,
+                                                   Map<String, Object> executive) throws IOException {
+        Map<String, Object> executiveSummary = asMap(executive.get("executiveSummary"));
+        long totalChecklists = longValue(asMap(summary.get("checklists")).get("total"));
+        long closedChecklists = longValue(asMap(summary.get("checklists")).get("closed"));
+        long remaining = totalChecklists - closedChecklists;
+        String forecastDate = firstNonBlank(stringValue(executiveSummary.get("forecastCompletion")), "TBD");
+        String dailyRate = firstNonBlank(stringValue(executiveSummary.get("dailyRunRate")), "N/A");
+        double pct = percent(closedChecklists, Math.max(1, totalChecklists));
+        long daysToCompletion;
+        try {
+            daysToCompletion = dailyRate.equals("N/A") ? 0 : (long) Math.ceil(remaining / Double.parseDouble(dailyRate.replace(",", ".")));
+        } catch (NumberFormatException ignored) {
+            daysToCompletion = 0;
         }
+        String today = prettyDate(LocalDate.now());
+
+        writer.sectionBanner("APPENDIX", "Project Completion Forecast");
+        writer.headingRule("PROJECT COMPLETION FORECAST");
+        writer.metricGrid(List.of(
+                new PdfMetric("Total Checklists", String.valueOf(totalChecklists), "project scope", new Color(26, 39, 68)),
+                new PdfMetric("Completed", String.valueOf(closedChecklists), formatPercent(pct), new Color(22, 163, 74)),
+                new PdfMetric("Remaining", String.valueOf(remaining), formatPercent(100.0 - pct), new Color(180, 83, 9)),
+                new PdfMetric("Forecast Date", forecastDate, "at " + dailyRate + " tags/day", new Color(92, 64, 0))
+        ), 4, 56f);
+
+        writer.headingRule("HOW THE FORECAST IS CALCULATED");
+        writer.noteBox("Step 1. Delivery pace: checklists closed \u00f7 elapsed days = " + dailyRate + " tags/day.\n"
+                + "Step 2. Remaining: " + totalChecklists + " \u2013 " + closedChecklists + " = " + remaining + " checklists.\n"
+                + "Step 3. Days to completion: " + remaining + " \u00f7 " + dailyRate + " \u2248 " + daysToCompletion + " working days.\n"
+                + "Step 4. Estimated end: " + today + " + " + daysToCompletion + " days \u2248 " + forecastDate + ".");
+
+        writer.noteBox("Important Caveat: This forecast may be misleading if not all checklists have been uploaded. "
+                + "As additional tags are registered the total count increases and the forecast shifts. "
+                + "Review alongside confirmed scope completeness.");
     }
 
     private List<Map<String, Object>> buildIssuePriorityBreakdownRows(Map<String, Object> sectionEntry,
                                                                       Map<String, Object> summary) {
         long totalIssues = Math.max(1, longValue(asMap(summary.get("issues")).get("total")));
-        return asListOfMaps(sectionEntry.get("progressByCategory")).stream()
-                .map(row -> {
-                    long open = longValue(row.get("open"));
-                    long closed = longValue(row.get("closed"));
-                    long total = longValue(row.get("total"));
-                    String resolutionStatus;
-                    if (open == 0 && closed > 0) {
-                        resolutionStatus = "Closed";
-                    } else if (open > 0 && closed == 0) {
-                        resolutionStatus = "Open";
-                    } else if (open > 0) {
-                        resolutionStatus = "Mixed";
-                    } else {
-                        resolutionStatus = "No activity";
-                    }
+        // Build a map from existing progress data
+        Map<String, long[]> existing = new LinkedHashMap<>();
+        for (Map<String, Object> row : asListOfMaps(sectionEntry.get("progressByCategory"))) {
+            existing.put(stringValue(row.get("category")),
+                    new long[]{longValue(row.get("open")), longValue(row.get("closed")), longValue(row.get("total"))});
+        }
+        // Ensure every priority in order appears (including zero rows)
+        List<String> allPriorities = new java.util.ArrayList<>(ISSUE_PRIORITY_ORDER);
+        allPriorities.add("No Priority Assigned");
+        for (String p : existing.keySet()) {
+            if (!allPriorities.contains(p)) allPriorities.add(p);
+        }
+        return allPriorities.stream()
+                .map(priority -> {
+                    long[] vals = existing.getOrDefault(priority, new long[]{0, 0, 0});
                     return row(
-                            "priority", stringValue(row.get("category")),
-                            "count", total,
-                            "percentage", formatPercent(percent(total, totalIssues)),
-                            "resolutionStatus", resolutionStatus
+                            "priority", priority,
+                            "open", vals[0],
+                            "closed", vals[1],
+                            "total", vals[2],
+                            "percentage", formatPercent(percent(vals[2], totalIssues))
                     );
                 })
-                .filter(row -> longValue(row.get("count")) > 0)
                 .toList();
     }
 
@@ -3043,6 +3594,7 @@ public class SavedReportService {
         if (includeTable) html.append((includeInsights || includeChart) ? " • Table" : "Table");
         html.append("</div></div><div class=\"section-body\">");
 
+        String pastedTable = "custom".equals(sectionId) ? stringValue(settings.get("pastedTable")) : "";
         boolean rendered = false;
         if (includeInsights && StringUtils.hasText(narrative)) {
             html.append("<div class=\"note\">").append(escapeHtml(narrative)).append("</div>");
@@ -3052,6 +3604,10 @@ public class SavedReportService {
             html.append("<div class=\"subheading\">Insights</div><ul class=\"insight-list\">");
             insights.forEach(line -> html.append("<li>").append(escapeHtml(line)).append("</li>"));
             html.append("</ul>");
+            rendered = true;
+        }
+        if (StringUtils.hasText(pastedTable)) {
+            appendTsvTable(html, pastedTable);
             rendered = true;
         }
         if (includeChart) {
@@ -3841,6 +4397,7 @@ public class SavedReportService {
             item.put("issueStatuses", normalizeOrderedList(asStringList(source.get("issueStatuses"))));
             item.put("checklistStatuses", normalizeOrderedList(asStringList(source.get("checklistStatuses"))));
             item.put("equipmentTypes", normalizeOrderedList(asStringList(source.get("equipmentTypes"))));
+            item.put("pastedTable", stringValue(source.get("pastedTable")));
             normalized.add(item);
         }
         return normalized;
@@ -3913,6 +4470,55 @@ public class SavedReportService {
 
     private boolean isClosedChecklist(Checklist checklist) {
         return CLOSED_CHECKLIST_STATUSES.contains(normalize(checklist.getStatus()));
+    }
+
+    private boolean isInProgressChecklist(Checklist checklist) {
+        return IN_PROGRESS_CHECKLIST_STATUSES.contains(normalize(checklist.getStatus()));
+    }
+
+    private static final Set<String> CXA_TO_VERIFY_STATUSES = Set.of(
+        "cxa_to_verify", "ready_for_cxa_review", "ready_for_cxa", "cxa_verify",
+        "cxa_review", "pending_cxa", "awaiting_cxa", "submitted_for_cxa"
+    );
+
+    private boolean isCxaToVerifyChecklist(Checklist checklist) {
+        String s = normalize(checklist.getStatus());
+        return CXA_TO_VERIFY_STATUSES.contains(s) || s.contains("cxa");
+    }
+
+    private boolean isCxaToVerifyIssue(Issue issue) {
+        String s = normalize(issue.getStatus());
+        return CXA_TO_VERIFY_STATUSES.contains(s) || s.contains("cxa");
+    }
+
+    private List<Map<String, Object>> buildIssuesByDiscipline(List<Issue> issues, List<Equipment> equipment) {
+        Map<String, Equipment> byAsset = equipment.stream()
+                .filter(e -> StringUtils.hasText(e.getExternalId()))
+                .collect(Collectors.toMap(Equipment::getExternalId, e -> e, (a, b) -> a, LinkedHashMap::new));
+        List<String> disciplineOrder = List.of("Electrical", "Mechanical", "Other");
+        Map<String, long[]> counts = new LinkedHashMap<>();
+        for (String d : disciplineOrder) counts.put(d, new long[3]); // [open, closed, cxa]
+        for (Issue issue : issues) {
+            Equipment eq = StringUtils.hasText(issue.getAssetId()) ? byAsset.get(issue.getAssetId()) : null;
+            String discipline = eq != null && StringUtils.hasText(eq.getDiscipline()) ? eq.getDiscipline().trim() : "Other";
+            String dl = discipline.substring(0, 1).toUpperCase(Locale.ROOT) + discipline.substring(1).toLowerCase(Locale.ROOT);
+            if (dl.contains("Elec")) dl = "Electrical";
+            else if (dl.contains("Mech")) dl = "Mechanical";
+            else dl = "Other";
+            long[] c = counts.computeIfAbsent(dl, k -> new long[3]);
+            if (isCxaToVerifyIssue(issue)) c[2]++;
+            else if (isClosedIssue(issue)) c[1]++;
+            else c[0]++;
+        }
+        return counts.entrySet().stream()
+                .map(e -> row("discipline", e.getKey(), "open", e.getValue()[0], "closed", e.getValue()[1], "cxa", e.getValue()[2], "total", e.getValue()[0] + e.getValue()[1] + e.getValue()[2]))
+                .filter(r -> longValue(r.get("total")) > 0 || disciplineOrder.contains(stringValue(r.get("discipline"))))
+                .toList();
+    }
+
+    private LocalDate fridayOnOrBefore(LocalDate date) {
+        int dow = date.getDayOfWeek().getValue(); // Mon=1 ... Fri=5 ... Sun=7
+        return date.minusDays(dow >= 5 ? dow - 5 : dow + 2);
     }
 
     private boolean isClosedIssue(Issue issue) {

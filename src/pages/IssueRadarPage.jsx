@@ -14,19 +14,23 @@
  */
 import React, { useState, useEffect, useMemo, useRef } from 'react'
 import { useProject } from '../context/ProjectContext'
-import { copilotApi, issuesApi } from '../services/api'
-import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip } from 'recharts'
+import { copilotApi, equipmentApi, issuesApi } from '../services/api'
+import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, LabelList } from 'recharts'
 
 // ─── Constants ────────────────────────────────────────────────────────────────
-const ALL_STATUSES = ['Open', 'Correction In Progress', 'Ready For Verification', 'Closed']
+const ALL_STATUSES = ['Issue Opened', 'Correction in Progress', 'GC to Verify', 'CxA to verify', 'Issue Closed', 'Accepted by Owner', 'Recommendation']
 const PRIORITIES   = ['P1 - Critical', 'P2 - High', 'P3 - Medium', 'P4 - Low']
 const TABS         = ['Statistics', 'Flow Analysis', 'Cross-Company']
+const CLOSED_ISSUE_STATUSES = new Set(['Issue Closed', 'Accepted by Owner'])
 
 const STATUS_COLORS = {
-  'Open':                      '#ef4444',
-  'Correction In Progress':    '#3b82f6',
-  'Ready For Verification':    '#eab308',
-  'Closed':                    '#22c55e',
+  'Issue Opened': '#ef4444',
+  'Correction in Progress': '#3b82f6',
+  'GC to Verify': '#f59e0b',
+  'CxA to verify': '#a855f7',
+  'Issue Closed': '#22c55e',
+  'Accepted by Owner': '#14b8a6',
+  Recommendation: '#94a3b8',
 }
 
 // ─── Normalise helpers — mapped to exact backend snake_case tokens ─────────────
@@ -36,26 +40,85 @@ function normStatus(s) {
     case 'issue_opened':
     case 'active':
     case 'new':
-      return 'Open'
+      return 'Issue Opened'
     case 'correction_in_progress':
     case 'in_progress':
     case 'started':
-      return 'Correction In Progress'
+      return 'Correction in Progress'
+    case 'gc_to_verify':
+    case 'gc_verify':
+      return 'GC to Verify'
     case 'ready_for_retest':
     case 'ready_for_verification':
-    case 'gc_to_verify':
     case 'cxa_to_verify':
-      return 'Ready For Verification'
+    case 'cxa_verify':
+      return 'CxA to verify'
     case 'issue_closed':
     case 'closed':
-    case 'accepted_by_owner':
     case 'done':
     case 'resolved':
     case 'completed':
-      return 'Closed'
+      return 'Issue Closed'
+    case 'accepted_by_owner':
+    case 'accepted':
+      return 'Accepted by Owner'
+    case 'recommendation':
+    case 'additional_information_needed':
+      return 'Recommendation'
     default:
-      return 'Open'
+      return 'Issue Opened'
   }
+}
+
+function isClosedStatus(status) {
+  return CLOSED_ISSUE_STATUSES.has(status)
+}
+
+function normalizeText(value) {
+  return String(value || '').trim().toLowerCase()
+}
+
+function getEquipmentLabel(equipment) {
+  return equipment?.equipmentType || equipment?.systemName || equipment?.discipline || equipment?.name || 'Unclassified'
+}
+
+function buildEquipmentLookup(equipment) {
+  const byId = new Map()
+  const byAlias = new Map()
+
+  equipment.forEach((item) => {
+    const ids = [item.externalId, item.id, item.tag, item.name]
+      .map(normalizeText)
+      .filter(Boolean)
+
+    ids.forEach((id) => {
+      if (!byAlias.has(id)) byAlias.set(id, item)
+    })
+
+    const externalId = normalizeText(item.externalId)
+    if (externalId) byId.set(externalId, item)
+  })
+
+  return { byId, byAlias }
+}
+
+function getIssueAssetKey(issue) {
+  return normalizeText(issue.assetId || issue.assetExternalId || issue.equipmentId || issue.linkedAssetId || issue.assetName)
+}
+
+function getEquipmentTypeForIssue(issue, lookup) {
+  const assetKey = getIssueAssetKey(issue)
+  const equipment = (assetKey && lookup.byId.get(assetKey)) || (assetKey && lookup.byAlias.get(assetKey)) || null
+  return getEquipmentLabel(equipment)
+}
+
+function getEquipmentNameForIssue(issue, lookup) {
+  const assetKey = getIssueAssetKey(issue)
+  const equipment = (assetKey && lookup.byId.get(assetKey)) || (assetKey && lookup.byAlias.get(assetKey)) || null
+  if (equipment) {
+    return equipment.name || equipment.tag || equipment.externalId || 'Unnamed Equipment'
+  }
+  return issue.assetName || issue.assetTag || issue.equipmentName || issue.assetId || issue.assetExternalId || 'Unassigned Equipment'
 }
 
 // null / empty priority → P4-Low (lowest bucket, not P1-Critical)
@@ -152,24 +215,25 @@ function exportCsv(filename, rows) {
 // status is NOT open/closed AND age > 14 days (stuck in correction/review)
 function isHighCycle(i) {
   const s = normStatus(i.status)
-  return s === 'Correction In Progress' || s === 'Ready For Verification'
+  return s === 'Correction in Progress' || s === 'GC to Verify' || s === 'CxA to verify'
 }
 
 // ─── Build all radar metrics from the raw issue array ────────────────────────
-function computeRadar(issues) {
+function computeRadar(issues, equipment) {
   if (!issues.length) return {
     pressure: 0, qualityScore: 0, qualityGrade: 'D', highCycleIssues: [],
     matrixRows: ALL_STATUSES.map(s => ({ status: s, ...PRIORITIES.reduce((a,p) => ({...a,[p]:0}),{}), total: 0 })),
     avgAgeByStatus: {}, globalAvgAge: 0, typeBreakdown: [], rootBreakdown: [],
     companyFlow: [], companyMatrix: [], topType: null, topRootCause: null,
-    avgCloseByCompany: [], topOpenCompanies: [], topCloseCompany: null,
+    avgCloseByCompany: [], equipmentTypeBreakdown: [], topEquipmentType: null, topCloseCompany: null,
     crossCompanyClosures: [], crossCompanySummary: [], avgClosureTime: 0,
     topOwner: null, outsideThreshold: 0, ageThreshold: 0, totalRows: 0, openCount: 0, closedCount: 0,
   }
 
-  const openIssues = issues.filter(i => normStatus(i.status) !== 'Closed')
-  const closedIssues = issues.filter(i => normStatus(i.status) === 'Closed')
+  const openIssues = issues.filter(i => !isClosedStatus(normStatus(i.status)))
+  const closedIssues = issues.filter(i => isClosedStatus(normStatus(i.status)))
   const highCycleIssues = issues.filter(isHighCycle)
+  const equipmentLookup = buildEquipmentLookup(equipment || [])
 
   // Quality score: 0–100. 0 = all P1 Critical open. 100 = nothing open.
   // Formula: penalise for open count and P1 proportion
@@ -224,8 +288,8 @@ function computeRadar(issues) {
     const s = normStatus(i.status)
     const hasDesc = (i.description || '').trim().length > 20
     if (!hasDesc) cause = 'Unclear issue definition'
-    else if (s === 'Correction In Progress' && age > 30) cause = 'Repeated rework cycle'
-    else if (s === 'Ready For Verification' && age > 14) cause = 'Verification bottleneck'
+    else if (s === 'Correction in Progress' && age > 30) cause = 'Repeated rework cycle'
+    else if ((s === 'GC to Verify' || s === 'CxA to verify') && age > 14) cause = 'Verification bottleneck'
     else if (age > 90) cause = 'Long-standing unresolved'
     else cause = 'Unclear issue definition'
     const e = rcMap.get(cause) || { count: 0, totalAge: 0 }
@@ -251,10 +315,39 @@ function computeRadar(issues) {
     .slice(0, 12)
     .map(([company, count]) => ({ company, count, pct: Math.round(count / openIssues.length * 100) }))
 
-  const topOpenCompanies = [...companyMap.entries()]
+  const equipmentTypeMap = new Map()
+  openIssues.forEach((issue) => {
+    const equipmentType = getEquipmentTypeForIssue(issue, equipmentLookup)
+    equipmentTypeMap.set(equipmentType, (equipmentTypeMap.get(equipmentType) || 0) + 1)
+  })
+  const equipmentTypeBreakdown = [...equipmentTypeMap.entries()]
     .sort((a, b) => b[1] - a[1])
+    .slice(0, 8)
+    .map(([type, count]) => ({ type, count }))
+
+  const equipmentIssueTypeMap = new Map()
+  issues.forEach((issue) => {
+    const equipmentType = getEquipmentTypeForIssue(issue, equipmentLookup)
+    const current = equipmentIssueTypeMap.get(equipmentType) || {
+      type: equipmentType,
+      open: 0,
+      closed: 0,
+      cxaToVerify: 0,
+      total: 0,
+    }
+    const status = normStatus(issue.status)
+    current.total += 1
+    if (status === 'CxA to verify') current.cxaToVerify += 1
+    if (isClosedStatus(status)) current.closed += 1
+    else current.open += 1
+    equipmentIssueTypeMap.set(equipmentType, current)
+  })
+  const equipmentIssueBreakdown = [...equipmentIssueTypeMap.values()]
+    .sort((a, b) => b.total - a.total || b.open - a.open || a.type.localeCompare(b.type))
+    .slice(0, 8)
+  const topEquipmentIssues = [...equipmentIssueTypeMap.values()]
+    .sort((a, b) => b.total - a.total || b.open - a.open || a.type.localeCompare(b.type))
     .slice(0, 5)
-    .map(([company, count]) => ({ company, count }))
 
   const closeMap = new Map()
   closedIssues.forEach(i => {
@@ -341,12 +434,15 @@ function computeRadar(issues) {
     typeBreakdown, rootBreakdown,
     companyFlow, companyMatrix,
     avgCloseByCompany,
-    topOpenCompanies,
+    equipmentTypeBreakdown,
+    equipmentIssueBreakdown,
+    topEquipmentIssues,
     topCloseCompany: avgCloseByCompany[0] || null,
     crossCompanyClosures,
     crossCompanySummary,
     avgClosureTime,
     topType:      typeBreakdown[0] || null,
+    topEquipmentType: equipmentTypeBreakdown[0] || null,
     topRootCause: rootBreakdown[0] || null,
     topOwner:     companyFlow[0]   || null,
     outsideThreshold, ageThreshold,
@@ -361,6 +457,7 @@ function useIssueData() {
   const { selectedProjects, activeProject } = useProject()
   const targets = selectedProjects.length > 0 ? selectedProjects : (activeProject ? [activeProject] : [])
   const [issues, setIssues] = useState([])
+  const [equipment, setEquipment] = useState([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
 
@@ -369,18 +466,24 @@ function useIssueData() {
     setLoading(true)
     setError(null)
     Promise.all(
-      targets.map(p =>
+      targets.map(p => Promise.all([
         issuesApi.getAll(p.externalId)
           .then(r => r.data?.data || [])
-          .catch(e => { console.error('Issues fetch error:', e); return [] })
-      )
+          .catch(e => { console.error('Issues fetch error:', e); return [] }),
+        equipmentApi.getAll(p.externalId)
+          .then(r => r.data?.data || [])
+          .catch(e => { console.error('Equipment fetch error:', e); return [] }),
+      ]))
     )
-      .then(results => setIssues(results.flat()))
+      .then(results => {
+        setIssues(results.flatMap(([projectIssues]) => projectIssues))
+        setEquipment(results.flatMap(([, projectEquipment]) => projectEquipment))
+      })
       .catch(e => setError(e.message))
       .finally(() => setLoading(false))
   }, [targets.map(p => p.externalId).join(',')])
 
-  return { issues, loading, error }
+  return { issues, equipment, loading, error }
 }
 
 // ─── Statistics Tab ───────────────────────────────────────────────────────────
@@ -432,52 +535,16 @@ function StatisticsTab({ radar }) {
             </table>
           </div>
           <div style={{ padding: '11px 16px', fontSize: 11, color: '#64748b', borderTop: '1px solid var(--divider)', fontStyle: 'italic' }}>
-            Highest pressure sits in <strong style={{ color: 'var(--text-primary)', fontStyle: 'normal' }}>Unassigned</strong>, with bottlenecks concentrated in early workflow states.
+            Workflow pressure is concentrated in the early issue states, with the matrix reflecting the live synced status mix.
           </div>
         </div>
 
-        {/* Issue Status Timeline */}
-        <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 12, padding: '18px 20px' }}>
-          <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 2 }}>Issue Status Timeline</div>
-          <div style={{ fontSize: 11, color: '#64748b', marginBottom: 24 }}>Track progression through the issue lifecycle</div>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-            {ALL_STATUSES.map((s, idx) => {
-              const row   = radar.matrixRows.find(r => r.status === s) || { total: 0 }
-              const avg   = radar.avgAgeByStatus[s] || 0
-              const color = STATUS_COLORS[s]
-              return (
-                <React.Fragment key={s}>
-                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6 }}>
-                    <div style={{
-                      width: 70, height: 70, borderRadius: '50%',
-                      border: `3px solid ${color}`,
-                      display: 'flex', alignItems: 'center', justifyContent: 'center',
-                      background: row.total > 0 ? `${color}18` : 'transparent',
-                    }}>
-                      <span style={{ fontSize: 19, fontWeight: 800, color: row.total > 0 ? color : '#334155' }}>{row.total}</span>
-                    </div>
-                    <div style={{ fontSize: 10, fontWeight: 600, color: row.total > 0 ? 'var(--text-primary)' : '#475569', textAlign: 'center', maxWidth: 70, lineHeight: 1.3 }}>{s}</div>
-                    <div style={{ fontSize: 10, color: '#64748b' }}>{avg > 0 ? `${avg}d avg` : '0d avg'}</div>
-                  </div>
-                  {idx < ALL_STATUSES.length - 1 && (
-                    <div style={{ flex: 1, height: 0, borderTop: '2px dashed #334155', margin: '0 4px', marginBottom: 36 }} />
-                  )}
-                </React.Fragment>
-              )
-            })}
-          </div>
-          {radar.outsideThreshold > 0 && (
-            <div style={{ marginTop: 16, padding: '10px 14px', background: 'rgba(239,68,68,0.07)', border: '1px solid rgba(239,68,68,0.2)', borderRadius: 8, fontSize: 11, color: '#f87171' }}>
-              {radar.outsideThreshold} transitions are outside the normal age threshold of {radar.ageThreshold}.{Math.round(radar.globalAvgAge * 0.1)} days.
-            </div>
-          )}
-        </div>
+        <IssuesByEquipmentCard data={radar.equipmentIssueBreakdown} />
       </div>
 
-      {/* Company matrix row */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
         <AvgTimeToCloseCard data={radar.avgCloseByCompany} />
-        <TopOpenCompaniesCard data={radar.topOpenCompanies} />
+        <TopEquipmentIssuesCard data={radar.topEquipmentIssues} />
       </div>
     </div>
   )
@@ -539,34 +606,101 @@ function AvgTimeToCloseCard({ data }) {
   )
 }
 
-function TopOpenCompaniesCard({ data }) {
+function IssuesByEquipmentCard({ data }) {
   const exportRows = (data || []).map(row => ({
-    company: row.company,
-    open_issues: row.count,
+    equipment_type: row.type,
+    open_issues: row.open,
+    closed_issues: row.closed,
+    cxa_to_verify: row.cxaToVerify,
+    total_issues: row.total,
   }))
   return (
     <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 12, padding: '18px 20px' }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
         <div>
-          <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 2 }}>Top 5 Companies (Open Issues)</div>
-          <div style={{ fontSize: 11, color: '#64748b' }}>Companies with the most unresolved issues</div>
+          <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 2 }}>Issues by Equipment Type</div>
+          <div style={{ fontSize: 11, color: '#64748b' }}>Open, closed, and CxA-to-verify counts grouped by linked equipment type</div>
         </div>
-        <button onClick={() => exportCsv('top-open-companies.csv', exportRows)} style={{ padding: '7px 12px', borderRadius: 8, background: 'transparent', border: '1px solid var(--border)', color: 'var(--text-primary)', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
+        <button onClick={() => exportCsv('issues-by-equipment-type-status.csv', exportRows)} style={{ padding: '7px 12px', borderRadius: 8, background: 'transparent', border: '1px solid var(--border)', color: 'var(--text-primary)', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
           Export
         </button>
       </div>
       {data?.length ? (
         <ResponsiveContainer width="100%" height={330}>
-          <BarChart data={data} margin={{ top: 4, right: 12, left: 8, bottom: 40 }}>
+          <BarChart data={data} margin={{ top: 16, right: 12, left: 8, bottom: 64 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="var(--divider)" vertical={false} />
-            <XAxis dataKey="company" angle={-40} textAnchor="end" height={70} tick={{ fill: 'var(--text-primary)', fontSize: 11 }} axisLine={false} tickLine={false} interval={0} />
+            <XAxis dataKey="type" angle={-32} textAnchor="end" height={92} tick={{ fill: 'var(--text-primary)', fontSize: 11 }} axisLine={false} tickLine={false} interval={0} />
             <YAxis tick={{ fill: '#94a3b8', fontSize: 11 }} axisLine={false} tickLine={false} />
-            <Tooltip formatter={(value) => [`${value}`, 'Open issues']} contentStyle={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 10 }} />
-            <Bar dataKey="count" fill="#f59e0b" radius={[6, 6, 0, 0]} />
+            <Tooltip
+              formatter={(value, name) => {
+                if (name === 'open') return [`${value}`, 'Open issues']
+                if (name === 'closed') return [`${value}`, 'Closed issues']
+                return [`${value}`, 'CxA to Verify']
+              }}
+              contentStyle={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 10 }}
+            />
+            <Bar dataKey="open" fill="#f87171" radius={[6, 6, 0, 0]}>
+              <LabelList dataKey="open" position="top" formatter={(value) => (value ? value : '')} style={{ fill: '#fca5a5', fontSize: 10, fontWeight: 700 }} />
+            </Bar>
+            <Bar dataKey="closed" fill="#22c55e" radius={[6, 6, 0, 0]}>
+              <LabelList dataKey="closed" position="top" formatter={(value) => (value ? value : '')} style={{ fill: '#86efac', fontSize: 10, fontWeight: 700 }} />
+            </Bar>
+            <Bar dataKey="cxaToVerify" fill="#a855f7" radius={[6, 6, 0, 0]}>
+              <LabelList dataKey="cxaToVerify" position="top" formatter={(value) => (value ? value : '')} style={{ fill: '#d8b4fe', fontSize: 10, fontWeight: 700 }} />
+            </Bar>
           </BarChart>
         </ResponsiveContainer>
       ) : (
-        <div style={{ fontSize: 12, color: '#475569', padding: '20px 0' }}>No open issue company data</div>
+        <div style={{ fontSize: 12, color: '#475569', padding: '20px 0' }}>No linked equipment-type issue data yet</div>
+      )}
+    </div>
+  )
+}
+
+function TopEquipmentIssuesCard({ data }) {
+  const exportRows = (data || []).map((row) => ({
+    equipment_type: row.type,
+    total_issues: row.total,
+    open_issues: row.open,
+    closed_issues: row.closed,
+    cxa_to_verify: row.cxaToVerify,
+  }))
+  const max = Math.max(...(data || []).map((row) => row.total), 1)
+
+  return (
+    <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 12, padding: '18px 20px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
+        <div>
+          <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 2 }}>Top 5 Equipment Types Most Issues</div>
+          <div style={{ fontSize: 11, color: '#64748b' }}>Highest issue concentration by equipment type</div>
+        </div>
+        <button onClick={() => exportCsv('top-5-equipment-types-most-issues.csv', exportRows)} style={{ padding: '7px 12px', borderRadius: 8, background: 'transparent', border: '1px solid var(--border)', color: 'var(--text-primary)', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
+          Export
+        </button>
+      </div>
+      {data?.length ? (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {data.map((row, index) => (
+            <div key={`${row.type}-${index}`} style={{ padding: '12px 14px', borderRadius: 10, background: 'rgba(255,255,255,0.03)', border: '1px solid var(--border)' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: 8 }}>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{row.type}</div>
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 6 }}>
+                    <span style={{ fontSize: 11, color: '#f87171', fontWeight: 700 }}>{row.open} open</span>
+                    <span style={{ fontSize: 11, color: '#22c55e', fontWeight: 700 }}>{row.closed} closed</span>
+                    <span style={{ fontSize: 11, color: '#a855f7', fontWeight: 700 }}>{row.cxaToVerify} CxA to verify</span>
+                  </div>
+                </div>
+                <div style={{ fontSize: 22, fontWeight: 800, color: '#60a5fa', flexShrink: 0 }}>{row.total}</div>
+              </div>
+              <div style={{ height: 6, background: 'var(--divider)', borderRadius: 999, overflow: 'hidden' }}>
+                <div style={{ width: `${(row.total / max) * 100}%`, height: '100%', background: 'linear-gradient(90deg, #60a5fa, #3b82f6)', borderRadius: 999, transition: 'width 0.4s ease' }} />
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div style={{ fontSize: 12, color: '#475569', padding: '20px 0' }}>No equipment-type issue groups to rank yet</div>
       )}
     </div>
   )
@@ -728,7 +862,7 @@ Current project issue data:
 - Issue type breakdown: ${JSON.stringify(radar.typeBreakdown?.slice(0,4)?.map(t => `${t.type}: ${t.count} (${t.pct}%)`).join(', '))}
 - Root cause breakdown: ${JSON.stringify(radar.rootBreakdown?.slice(0,3)?.map(r => `${r.cause}: ${r.count} (avg ${r.avgAge}d)`).join(', '))}
 - Top open-load owner: ${radar.topOwner ? `${radar.topOwner.company} with ${radar.topOwner.count} open issues` : 'N/A'}
-- Status matrix: Open=${radar.matrixRows?.find(r=>r.status==='Open')?.total||0}, CorrectionInProgress=${radar.matrixRows?.find(r=>r.status==='Correction In Progress')?.total||0}, ReadyForVerification=${radar.matrixRows?.find(r=>r.status==='Ready For Verification')?.total||0}, Closed=${radar.matrixRows?.find(r=>r.status==='Closed')?.total||0}
+- Status matrix: IssueOpened=${radar.matrixRows?.find(r=>r.status==='Issue Opened')?.total||0}, CorrectionInProgress=${radar.matrixRows?.find(r=>r.status==='Correction in Progress')?.total||0}, GCToVerify=${radar.matrixRows?.find(r=>r.status==='GC to Verify')?.total||0}, CxAToVerify=${radar.matrixRows?.find(r=>r.status==='CxA to verify')?.total||0}, IssueClosed=${radar.matrixRows?.find(r=>r.status==='Issue Closed')?.total||0}, AcceptedByOwner=${radar.matrixRows?.find(r=>r.status==='Accepted by Owner')?.total||0}, Recommendation=${radar.matrixRows?.find(r=>r.status==='Recommendation')?.total||0}
 
 Be concise, actionable, and construction/commissioning focused. Keep answers under 4 sentences unless a step-by-step plan is requested.`
 
@@ -886,8 +1020,8 @@ Be concise, actionable, and construction/commissioning focused. Keep answers und
 
 // ─── Main Page ────────────────────────────────────────────────────────────────
 export default function IssueRadarPage() {
-  const { issues, loading, error } = useIssueData()
-  const radar = useMemo(() => computeRadar(issues), [issues])
+  const { issues, equipment, loading, error } = useIssueData()
+  const radar = useMemo(() => computeRadar(issues, equipment), [issues, equipment])
   const [activeTab, setActiveTab] = useState('Statistics')
 
   if (loading) return (
@@ -935,7 +1069,7 @@ export default function IssueRadarPage() {
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
           {[
             { label: 'Avg Close Leader', value: radar.topCloseCompany ? `${radar.topCloseCompany.company} (${radar.topCloseCompany.avgDays}d)` : 'N/A' },
-            { label: 'Top Open Company', value: radar.topOpenCompanies?.[0] ? `${radar.topOpenCompanies[0].company} (${radar.topOpenCompanies[0].count} open)` : 'N/A' },
+            { label: 'Top Equipment Type', value: radar.topEquipmentType ? `${radar.topEquipmentType.type} (${radar.topEquipmentType.count} open)` : 'N/A' },
             { label: 'Main Load Owner', value: radar.topOwner ? `${radar.topOwner.company} (${radar.topOwner.count} open)` : 'N/A' },
           ].map(({ label, value }) => (
             <div key={label} style={{ padding: '6px 14px', borderRadius: 20, background: 'rgba(59,130,246,0.09)', border: '1px solid rgba(59,130,246,0.22)', fontSize: 12, fontWeight: 600, color: '#60a5fa' }}>

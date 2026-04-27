@@ -34,6 +34,7 @@ public class EquipmentMatrixDto {
         private String status;            // "Closed", "Open", etc.
         private String systemName;        // parent system / group name (buildingId or discipline)
         private String assignedTo;        // Assigned person
+        private String spaceName;
         private String equipmentType;
         private String discipline;
 
@@ -74,6 +75,8 @@ public class EquipmentMatrixDto {
         public void setSystemName(String v) { this.systemName = v; }
         public String getAssignedTo() { return assignedTo; }
         public void setAssignedTo(String v) { this.assignedTo = v; }
+        public String getSpaceName() { return spaceName; }
+        public void setSpaceName(String v) { this.spaceName = v; }
         public String getEquipmentType() { return equipmentType; }
         public void setEquipmentType(String v) { this.equipmentType = v; }
         public String getDiscipline() { return discipline; }

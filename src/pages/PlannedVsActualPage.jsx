@@ -12,6 +12,7 @@ import {
 import { useProject } from '../context/ProjectContext'
 import { checklistsApi } from '../services/api'
 import { checklistTagDisplayLabel, deriveChecklistTag } from '../utils/checklistTagUtils'
+import { isChecklistDone, checklistActualFinishDate } from '../utils/checklistStatusUtils'
 import toast from 'react-hot-toast'
 
 // ─── CxAlloy deep-link ────────────────────────────────────────────────────────
@@ -46,8 +47,7 @@ function pickDate(c) {
 function pickClosedDate(c) {
   if (!isDone(c?.status)) return null
   return c.latestFinishedDate || c.latest_finished_date
-      || c.actualFinishDate || c.actual_finish_date
-      || c.completedDate || c.completed_date
+      || checklistActualFinishDate(c)
       || c.updatedAt || c.updated_at
       || null
 }
@@ -57,9 +57,7 @@ function pickDueDate(c) {
 }
 
 // ─── "done" predicate ─────────────────────────────────────────────────────────
-const DONE = new Set(['finished','complete','completed','done','closed',
-  'signed_off','approved','passed','issue_closed','accepted_by_owner'])
-const isDone = s => DONE.has((s || '').toLowerCase().replace(/[ \-]/g,'_'))
+const isDone = isChecklistDone
 
 // ─── Tag normaliser ───────────────────────────────────────────────────────────
 // Handles: explicit color words, ITR-A/B/C/D (CxAlloy standard),
@@ -450,24 +448,26 @@ function buildPaceMetrics(checklists) {
   const closedChecklists = checklists.filter(c => isDone(c.status))
   if (!closedChecklists.length) return { d: 0, w: 0, m: 0, cumulative: 0 }
 
-  const weekMap = new Map()
-  closedChecklists.forEach(c => {
-    const raw = pickClosedDate(c)
-    if (!raw) return
-    const d = new Date(raw)
-    if (isNaN(d)) return
-    const wk = isoWeekLabel(d)
-    weekMap.set(wk, (weekMap.get(wk) || 0) + 1)
-  })
+  const dates = closedChecklists
+    .map(c => {
+      const raw = pickClosedDate(c)
+      if (!raw) return null
+      const d = new Date(raw)
+      return isNaN(d) ? null : d
+    })
+    .filter(Boolean)
 
-  const entries = Array.from(weekMap.values())
-  const total = entries.reduce((s, v) => s + v, 0)
-  const activeWeeks = entries.length || 1
-  const w = +(total / activeWeeks).toFixed(1)
+  if (!dates.length) return { d: 0, w: 0, m: 0, cumulative: closedChecklists.length }
+
+  const minMs = Math.min(...dates.map(d => d.getTime()))
+  const maxMs = Math.max(...dates.map(d => d.getTime()))
+  const calendarDays = Math.max(1, (maxMs - minMs) / 86400000)
+  const d = +(closedChecklists.length / calendarDays).toFixed(1)
+  const w = +(d * 7).toFixed(1)
   return {
-    d: +(w / 7).toFixed(1),
+    d,
     w,
-    m: +(w * 4.33).toFixed(1),
+    m: +(d * 30.4).toFixed(1),
     cumulative: closedChecklists.length,
   }
 }
@@ -555,7 +555,8 @@ function computeOverdue(checklists, planRows) {
 // Without baseline: fall back to recently-active open checklists.
 function computeNext14Days(checklists, planRows) {
   const now    = new Date()
-  const future = addDays(now, 14)
+  const future = addDays(now, 7)
+  if (!planRows?.length) return []
 
   // ── WITH plan baseline: use plan rows with End date in next 14 days ────────
   if (planRows && planRows.length > 0) {
@@ -798,7 +799,7 @@ export default function PlannedVsActualPage() {
   const [chartView, setChartView] = useState('W') // 'Overall' | 'D' | 'W' | 'M'
   const [chartTag, setChartTag] = useState('all')
   const [showCumulative, setShowCumulative] = useState(true)
-  const [chartSeriesMode, setChartSeriesMode] = useState('line')
+  const [chartSeriesMode, setChartSeriesMode] = useState('bar')
   const fileInputRef = React.useRef(null)
 
   const handlePlanImport = async (e) => {
@@ -909,7 +910,7 @@ export default function PlannedVsActualPage() {
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16 }}>
         <div>
           <h2 style={{ fontSize: 22, fontWeight: 800, color: 'var(--text-primary)', margin: 0 }}>Planned vs Actual</h2>
-          <p style={{ fontSize: 13, color: '#64748b', marginTop: 4 }}>Plan vs actual trend using project-specific plan uploads, overdue logic, and next-14-day outlook.</p>
+          <p style={{ fontSize: 13, color: '#64748b', marginTop: 4 }}>Plan vs actual trend using project-specific plan uploads, overdue logic, and next-7-day planned outlook.</p>
         </div>
 
         {/* Action buttons */}
@@ -1237,7 +1238,7 @@ export default function PlannedVsActualPage() {
             <div style={{ marginTop: 12, fontSize: 11, color: '#334155', fontStyle: 'italic' }}>
               {planBaseline
                 ? `Plan uses "${planBaseline.fileName}" (${planBaseline.count} items) saved for this selected project. Column A is checklist name and column C is planned end date. Actual uses closed checklist completion dates first with updated-date fallback for older closed rows.`
-                : 'Actual uses closed checklist completion dates first with updated-date fallback for older closed rows. Import a project plan to drive planned trend, overdue logic, and next-14-day items.'
+                : 'Actual uses closed checklist completion dates first with updated-date fallback for older closed rows. Import a project plan to drive planned trend, overdue logic, and next-7-day items.'
               }
             </div>
           </div>
@@ -1342,14 +1343,14 @@ export default function PlannedVsActualPage() {
               <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--divider)' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
                   <Calendar size={14} color="#38bdf8" />
-                  <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--text-primary)' }}>Next 14 Days</span>
+                  <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--text-primary)' }}>Next 7 Days</span>
                   {next14Days.length > 0 && (
                     <span style={{ marginLeft: 'auto', fontSize: 11, padding: '2px 8px', borderRadius: 20, background: 'rgba(56,189,248,0.12)', border: '1px solid rgba(56,189,248,0.25)', color: '#38bdf8', fontWeight: 600 }}>
                       {next14Days.length}
                     </span>
                   )}
                 </div>
-                <div style={{ fontSize: 11, color: '#475569' }}>Upcoming checklist activity preview</div>
+                <div style={{ fontSize: 11, color: '#475569' }}>Upcoming planned checklist activity from the imported baseline</div>
               </div>
 
               <div>
@@ -1385,7 +1386,7 @@ export default function PlannedVsActualPage() {
                 {!next14Days.length && (
                   <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '40px 20px', gap: 8 }}>
                     <Calendar size={22} color="#334155" />
-                    <div style={{ fontSize: 12, color: '#475569' }}>No open checklist activity found — sync checklists first</div>
+                    <div style={{ fontSize: 12, color: '#475569' }}>{planBaseline ? 'No planned checklist activity is due in the next 7 days' : 'Import a plan baseline to view the next 7 planned checklists'}</div>
                   </div>
                 )}
 

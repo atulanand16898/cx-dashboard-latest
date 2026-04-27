@@ -17,9 +17,11 @@ import org.springframework.util.StringUtils;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
 /**
  * EquipmentService — syncs CxAlloy GET /equipment endpoint.
@@ -112,6 +114,8 @@ public class EquipmentService extends BaseProjectService {
         ApiSyncLog log = startLog("/equipment", "GET");
         int totalSynced = 0;
         int page = 1;
+        boolean parsedAnyPayload = false;
+        Set<String> syncedExternalIds = new LinkedHashSet<>();
         try {
             logger.info("Syncing equipment for project_id={} via GET /equipment (paginated)", pid);
             while (true) {
@@ -132,7 +136,8 @@ public class EquipmentService extends BaseProjectService {
                 }
 
                 saveRaw("/equipment?page=" + page, "equipment_list_p" + page, pid, raw);
-                int count = parseAndSave(raw, pid);
+                int count = parseAndSave(raw, pid, syncedExternalIds);
+                parsedAnyPayload = true;
                 totalSynced += count;
                 logger.info("Equipment page {}: {} records (running total: {})", page, count, totalSynced);
 
@@ -142,11 +147,13 @@ public class EquipmentService extends BaseProjectService {
                     break;
                 }
             }
+            int staleRemoved = parsedAnyPayload ? pruneMissingCurrentProviderRows(pid, syncedExternalIds) : 0;
             long dur = System.currentTimeMillis() - start;
             finishLog(log, "SUCCESS", totalSynced, dur, null);
-            logger.info("Equipment sync complete for project {}: {} records in {} pages", pid, totalSynced, page);
+            logger.info("Equipment sync complete for project {}: {} records in {} pages ({} stale removed)",
+                    pid, totalSynced, page, staleRemoved);
             return new SyncResult("/equipment", "SUCCESS", totalSynced,
-                "Synced " + totalSynced + " equipment records (" + page + " pages)", dur);
+                "Synced " + totalSynced + " equipment records (" + page + " pages, " + staleRemoved + " stale removed)", dur);
         } catch (Exception e) {
             long dur = System.currentTimeMillis() - start;
             logger.error("Equipment sync FAILED for project {}: {}", pid, e.getMessage());
@@ -286,7 +293,7 @@ public class EquipmentService extends BaseProjectService {
 
     // ── Parsing ───────────────────────────────────────────────────────────────
 
-    private int parseAndSave(String json, String pid) throws Exception {
+    private int parseAndSave(String json, String pid, Set<String> syncedExternalIds) throws Exception {
         if (json == null || json.isBlank()) {
             logger.warn("Empty response for /equipment project={}", pid);
             return 0;
@@ -299,9 +306,27 @@ public class EquipmentService extends BaseProjectService {
         } else if (data.isObject() && data.size() > 0) {
             list.add(map(data, pid));
         }
+        list.stream()
+                .map(Equipment::getExternalId)
+                .filter(StringUtils::hasText)
+                .forEach(syncedExternalIds::add);
         list.forEach(this::upsert);
         logger.info("Parsed {} equipment records for project {}", list.size(), pid);
         return list.size();
+    }
+
+    private int pruneMissingCurrentProviderRows(String projectId, Set<String> syncedExternalIds) {
+        List<Equipment> staleRows = equipmentRepository.findByProjectId(projectId).stream()
+                .filter(equipment -> providerContextService.matchesCurrentProvider(equipment.getProvider()))
+                .filter(equipment -> StringUtils.hasText(equipment.getExternalId()))
+                .filter(equipment -> !syncedExternalIds.contains(equipment.getExternalId()))
+                .toList();
+        if (staleRows.isEmpty()) {
+            return 0;
+        }
+        equipmentRepository.deleteAllInBatch(staleRows);
+        logger.info("Removed {} stale equipment rows for project {}", staleRows.size(), projectId);
+        return staleRows.size();
     }
 
     /**

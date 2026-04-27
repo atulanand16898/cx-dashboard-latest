@@ -5,6 +5,7 @@ import { useProject } from '../context/ProjectContext'
 import { issuesApi, tasksApi, checklistsApi } from '../services/api'
 import { DonutChart, StatCard, CardSkeleton } from '../components/ui'
 import { CHECKLIST_TAG_COLORS, DASHBOARD_CHECKLIST_TAG_ORDER, checklistTagDisplayLabel, deriveChecklistTag } from '../utils/checklistTagUtils'
+import { isChecklistDone } from '../utils/checklistStatusUtils'
 import toast from 'react-hot-toast'
 
 // ─── ISO week label (correct ISO-8601) ───────────────────────────────────────
@@ -95,14 +96,11 @@ function buildWeeklyData(issues, period) {
 function buildTagLevels(checklists) {
   const counts = { red: 0, yellow: 0, green: 0, blue: 0, non_critical: 0 }
   const done   = { red: 0, yellow: 0, green: 0, blue: 0, non_critical: 0 }
-  const DONE_ST = new Set(['finished','complete','completed','done','closed','signed_off','approved','passed'])
-
   checklists.forEach(c => {
     const tag = deriveChecklistTag(c)
     if (!DASHBOARD_CHECKLIST_TAG_ORDER.includes(tag)) return
     counts[tag]++
-    const st = (c.status || '').toLowerCase().replace(/[ \-]/g, '_')
-    if (DONE_ST.has(st)) done[tag]++
+    if (isChecklistDone(c.status)) done[tag]++
   })
 
   return DASHBOARD_CHECKLIST_TAG_ORDER.map(tag => ({
@@ -161,8 +159,7 @@ export default function DashboardPage() {
       const openIssues   = issueList.filter(i => !CLOSED_STATUSES.has((i.status || '').toLowerCase().replace(/[ \-]/g, '_')))
       const closedIssues = issueList.filter(i =>  CLOSED_STATUSES.has((i.status || '').toLowerCase().replace(/[ \-]/g, '_')))
 
-      const DONE_CL = new Set(['finished','complete','completed','done','closed','signed_off','approved','passed'])
-      const finishedChecklists = checkList.filter(c => DONE_CL.has((c.status || '').toLowerCase().replace(/[ \-]/g, '_')))
+      const finishedChecklists = checkList.filter(c => isChecklistDone(c.status))
       const checklistCompletionRate = checkList.length > 0
         ? Math.round((finishedChecklists.length / checkList.length) * 1000) / 10
         : 0

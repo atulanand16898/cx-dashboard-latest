@@ -1,5 +1,6 @@
 import React from 'react'
 import { AlertCircle, RefreshCw, X } from 'lucide-react'
+import { CHECKLIST_DONE_STATUSES } from '../../utils/checklistStatusUtils'
 
 // ─── Skeleton loader ────────────────────────────────────────────────────────
 export function Skeleton({ className = '' }) {
@@ -56,8 +57,8 @@ export function StatusBadge({ status }) {
   if (['in_progress', 'inprogress', 'started', 'active', 'open', 'issue_opened',
        'correction_in_progress'].includes(s)) cls = 'tag-blue'
   // Closed / finished states
-  if (['finished', 'complete', 'completed', 'done', 'closed', 'resolved',
-       'signed_off', 'issue_closed', 'accepted_by_owner'].includes(s)) cls = 'tag-green'
+  if (CHECKLIST_DONE_STATUSES.has(s)
+      || ['resolved', 'issue_closed'].includes(s)) cls = 'tag-green'
   // Pending / not started
   if (['not_started', 'notstarted', 'new', 'pending',
        'additional_information_needed'].includes(s)) cls = 'tag-gray'
@@ -66,8 +67,17 @@ export function StatusBadge({ status }) {
        'gc_to_verify', 'cxa_to_verify', 'ready_for_retest'].includes(s)) cls = 'tag-yellow'
   // Error / failure states
   if (['failed', 'error', 'critical', 'overdue', 'cancelled', 'canceled'].includes(s)) cls = 'tag-red'
-  // Human-readable label: convert snake_case to Title Case
-  const label = (status || 'Unknown').replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
+  const issueLabels = {
+    issue_opened: 'Issue Opened',
+    correction_in_progress: 'Correction in Progress',
+    gc_to_verify: 'GC to Verify',
+    cxa_to_verify: 'CxA to verify',
+    issue_closed: 'Issue Closed',
+    accepted_by_owner: 'Accepted by Owner',
+    recommendation: 'Recommendation',
+  }
+  const label = issueLabels[s]
+    || (status || 'Unknown').replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
   return <span className={`status-badge ${cls}`}>{label}</span>
 }
 

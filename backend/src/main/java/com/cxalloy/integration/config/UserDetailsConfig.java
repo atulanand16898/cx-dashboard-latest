@@ -52,6 +52,14 @@ public class UserDetailsConfig {
                         .build();
             }
 
+            if (normalized.equals(adminCredentialsProperties.getPrimaveraUsername().trim().toLowerCase())) {
+                return User.builder()
+                        .username(adminCredentialsProperties.getPrimaveraUsername())
+                        .password(passwordEncoder.encode(adminCredentialsProperties.getPrimaveraPassword()))
+                        .roles("ADMIN", "USER")
+                        .build();
+            }
+
             if (!StringUtils.hasText(normalized) || !normalized.contains("@")) {
                 throw new UsernameNotFoundException("User not found");
             }

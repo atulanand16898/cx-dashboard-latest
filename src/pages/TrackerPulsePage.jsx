@@ -1,9 +1,11 @@
 import React, { useState, useEffect, useMemo } from 'react'
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine, Cell } from 'recharts'
-import { Zap } from 'lucide-react'
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine, Cell, LabelList } from 'recharts'
+import { AlertTriangle, ChevronRight, ClipboardList, Zap } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
 import { useProject } from '../context/ProjectContext'
 import { checklistsApi, issuesApi, tasksApi } from '../services/api'
 import { CHECKLIST_TAG_COLORS, DASHBOARD_CHECKLIST_TAG_ORDER, checklistTagDisplayLabel, deriveChecklistTag } from '../utils/checklistTagUtils'
+import { isChecklistDone, checklistActualFinishDate } from '../utils/checklistStatusUtils'
 
 const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
 const SUMMARY_MATRIX_TAG_ORDER = DASHBOARD_CHECKLIST_TAG_ORDER
@@ -28,9 +30,7 @@ function isoWeekMonday(d) {
 }
 
 // ── "done" status predicate ────────────────────────────────────────────────────
-const isDone = s => ['finished', 'complete', 'completed', 'done', 'closed',
-  'signed_off', 'approved', 'passed', 'issue_closed', 'accepted_by_owner']
-  .includes((s || '').toLowerCase().replace(/[\s\-]/g, '_'))
+const isDone = isChecklistDone
 
 // ── Best date from a checklist ────────────────────────────────────────────────
 function pickDate(c) {
@@ -44,10 +44,39 @@ function pickDate(c) {
 function pickClosedDate(c) {
   if (!isDone(c?.status)) return null
   return c.latestFinishedDate || c.latest_finished_date
-      || c.actualFinishDate || c.actual_finish_date
-      || c.completedDate || c.completed_date
+      || checklistActualFinishDate(c)
       || c.updatedAt || c.updated_at
       || null
+}
+
+function normalizeChecklistWorkflowStatus(status) {
+  const normalized = String(status || '').toLowerCase().trim().replace(/[\s-]+/g, '_')
+  if (normalized.includes('cxa') && normalized.includes('review')) return 'ready_for_cxa_review'
+  return normalized
+}
+
+function normalizeIssueWorkflowStatus(status) {
+  switch ((status || '').toLowerCase().trim()) {
+    case 'gc_to_verify':
+    case 'gc_verify':
+      return 'gc_to_verify'
+    case 'ready_for_retest':
+    case 'ready_for_verification':
+    case 'cxa_to_verify':
+    case 'cxa_verify':
+      return 'cxa_to_verify'
+    case 'issue_closed':
+    case 'closed':
+    case 'done':
+    case 'resolved':
+    case 'completed':
+      return 'issue_closed'
+    case 'accepted_by_owner':
+    case 'accepted':
+      return 'accepted_by_owner'
+    default:
+      return String(status || '').toLowerCase().trim().replace(/[\s-]+/g, '_')
+  }
 }
 
 function calculateDailyRunRate(items, dateAccessor = pickClosedDate) {
@@ -294,6 +323,13 @@ function computeStats(checklists, issues, tasks) {
     return d
   })()
 
+  const readyForCxaReviewChecklists = checklists.filter(
+    (checklist) => normalizeChecklistWorkflowStatus(checklist.status) === 'ready_for_cxa_review'
+  ).length
+  const cxaToVerifyIssues = issues.filter(
+    (issue) => normalizeIssueWorkflowStatus(issue.status) === 'cxa_to_verify'
+  ).length
+
   return {
     total, closed, open,
     runRatePerWeek, avgPerDay, allTimeAvgPerDayOfWeek,
@@ -302,6 +338,7 @@ function computeStats(checklists, issues, tasks) {
     dailyData, bestDay, aboveAvgDays, insightText,
     colorRows,
     schedVariance, openIssues, closedIssues,
+    readyForCxaReviewChecklists, cxaToVerifyIssues,
     completion, projectedCompletion, daysNeeded, remaining,
   }
 }
@@ -396,6 +433,66 @@ const TagDonutCard = ({ tag, label, count, closedOfTag, pct, dailyRunRate, style
 }
 
 // ── Custom tooltip — shows day value + average line (matching modum.me hover) ──
+const HighlightStatusCard = ({ icon: Icon, label, count, description, tone, onClick }) => (
+  <button
+    type="button"
+    onClick={onClick}
+    style={{
+      width: '100%',
+      background: 'linear-gradient(180deg, rgba(15,23,42,0.96), rgba(17,24,39,0.92))',
+      border: `1px solid ${tone}33`,
+      borderRadius: 14,
+      padding: '14px 16px',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      gap: 14,
+      cursor: 'pointer',
+      transition: 'transform 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease',
+      boxShadow: `0 10px 24px ${tone}12`,
+    }}
+    onMouseEnter={(e) => {
+      e.currentTarget.style.transform = 'translateY(-1px)'
+      e.currentTarget.style.borderColor = `${tone}66`
+      e.currentTarget.style.boxShadow = `0 14px 28px ${tone}1f`
+    }}
+    onMouseLeave={(e) => {
+      e.currentTarget.style.transform = 'translateY(0)'
+      e.currentTarget.style.borderColor = `${tone}33`
+      e.currentTarget.style.boxShadow = `0 10px 24px ${tone}12`
+    }}
+  >
+    <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0, flex: 1 }}>
+      <div style={{
+        width: 38,
+        height: 38,
+        borderRadius: 12,
+        background: `${tone}14`,
+        border: `1px solid ${tone}26`,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        color: tone,
+        flexShrink: 0,
+      }}>
+        <Icon size={18} />
+      </div>
+      <div style={{ minWidth: 0, textAlign: 'left' }}>
+        <div style={{ fontSize: 12, fontWeight: 800, color: 'var(--text-primary)', marginBottom: 3 }}>{label}</div>
+        <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{description}</div>
+      </div>
+    </div>
+
+    <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
+      <div style={{ textAlign: 'right' }}>
+        <div style={{ fontSize: 22, fontWeight: 800, color: tone, lineHeight: 1 }}>{count}</div>
+        <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Items</div>
+      </div>
+      <ChevronRight size={16} color="var(--text-muted)" />
+    </div>
+  </button>
+)
+
 const CustomTooltip = ({ active, payload, label }) => {
   if (!active || !payload?.length) return null
   const val = payload.find(p => p.dataKey === 'count')
@@ -450,6 +547,7 @@ function useMultiProjectData() {
 
 // ── Page ───────────────────────────────────────────────────────────────────────
 export default function TrackerPulsePage() {
+  const navigate = useNavigate()
   const { data, loading } = useMultiProjectData()
   const stats = useMemo(() => computeStats(data.checklists, data.issues, data.tasks), [data])
 
@@ -513,21 +611,56 @@ export default function TrackerPulsePage() {
           <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 4 }}>Summary Matrix</div>
           <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 16 }}>Total checklists, closed checklists, open checklists, color split, and daily run rate by category</div>
 
-          <div style={{ display: 'flex', alignItems: 'flex-start', gap: 22, marginBottom: 18 }}>
-            <div style={{ display: 'flex', alignItems: 'flex-start', gap: 16, flex: 1 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(320px, 0.9fr)', gap: 18, marginBottom: 18, alignItems: 'stretch' }}>
+            <div style={{ display: 'flex', alignItems: 'flex-start', gap: 16, minWidth: 0 }}>
               <SummaryDonut total={stats.total} closed={stats.closed} />
               <div style={{ display: 'flex', flexDirection: 'column', gap: 10, flex: 1 }}>
                 {[
-                  { label: 'TOTAL CHECKLISTS',  value: stats.total.toLocaleString() },
+                  { label: 'TOTAL CHECKLISTS', value: stats.total.toLocaleString() },
                   { label: 'CHECKLISTS CLOSED', value: stats.closed.toLocaleString() },
-                  { label: 'CHECKLISTS OPEN',   value: stats.open.toLocaleString() },
-                ].map(row => (
+                  { label: 'CHECKLISTS OPEN', value: stats.open.toLocaleString() },
+                ].map((row) => (
                   <div key={row.label}>
                     <div style={{ fontSize: 10, color: 'var(--text-muted)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em' }}>{row.label}</div>
                     <div style={{ fontSize: 20, fontWeight: 800, color: 'var(--text-primary)' }}>{row.value}</div>
                   </div>
                 ))}
               </div>
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 12, alignContent: 'start' }}>
+              <HighlightStatusCard
+                icon={ClipboardList}
+                label="Checklist Highlight"
+                description="Ready for CxA Review"
+                count={stats.readyForCxaReviewChecklists}
+                tone="#38bdf8"
+                onClick={() => navigate('/checklists', {
+                  state: {
+                    listPreset: {
+                      entityType: 'checklists',
+                      filters: { status: 'ready_for_cxa_review' },
+                      search: '',
+                    },
+                  },
+                })}
+              />
+              <HighlightStatusCard
+                icon={AlertTriangle}
+                label="Issue Highlight"
+                description="CxA to Verify"
+                count={stats.cxaToVerifyIssues}
+                tone="#f59e0b"
+                onClick={() => navigate('/issues', {
+                  state: {
+                    listPreset: {
+                      entityType: 'issues',
+                      filters: { status: 'cxa_to_verify' },
+                      search: '',
+                    },
+                  },
+                })}
+              />
             </div>
           </div>
 
@@ -546,6 +679,7 @@ export default function TrackerPulsePage() {
               />
             ))}
           </div>
+
         </div>
 
         {/* ── Weekly Progress ─────────────────────────────────────────────────── */}
@@ -574,6 +708,12 @@ export default function TrackerPulsePage() {
               {/* Green avg reference line — all-time total / 7 days */}
               <ReferenceLine y={stats.allTimeAvgPerDayOfWeek} stroke="#22c55e" strokeWidth={1.5} strokeDasharray="0" />
               <Bar dataKey="count" radius={[4, 4, 0, 0]}>
+                <LabelList
+                  dataKey="count"
+                  position="top"
+                  formatter={(value) => (value ? value : '')}
+                  style={{ fill: '#cbd5e1', fontSize: 10, fontWeight: 700 }}
+                />
                 {stats.dailyData.map((entry, i) => (
                   <Cell key={i}
                     fill={entry.day === stats.bestDay.day ? '#38bdf8' : '#1d4ed8'}

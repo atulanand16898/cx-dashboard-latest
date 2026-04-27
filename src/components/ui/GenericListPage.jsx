@@ -1,8 +1,10 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react'
 import ReactDOM from 'react-dom'
+import { useLocation } from 'react-router-dom'
 import { Search, RefreshCw, X, ExternalLink, CheckCircle2, Clock, AlertCircle, BarChart2, ChevronDown, Download } from 'lucide-react'
 import { Table, StatusBadge, EmptyState, Skeleton, SyncResultCard } from './index'
 import toast from 'react-hot-toast'
+import { isChecklistDone } from '../../utils/checklistStatusUtils'
 
 const PAGE_SIZE = 20
 
@@ -263,6 +265,7 @@ export default function GenericListPage({
   filterConfigs = [],
   topContent = null,
 }) {
+  const location = useLocation()
   const [items, setItems]               = useState([])
   const [loading, setLoading]           = useState(true)
   const [search, setSearch]             = useState('')
@@ -286,7 +289,16 @@ export default function GenericListPage({
 
   useEffect(() => { load() }, [load])
   useEffect(() => { setVisibleCount(PAGE_SIZE) }, [search, activeProjectId, filters])
-  useEffect(() => { setFilters({}) }, [activeProjectId, entityType])
+  useEffect(() => {
+    const preset = location.state?.listPreset
+    if (preset?.entityType === entityType) {
+      setSearch(preset.search || '')
+      setFilters(preset.filters || {})
+    } else {
+      setSearch('')
+      setFilters({})
+    }
+  }, [activeProjectId, entityType, location.key, location.state])
 
   const handleSync = async () => {
     if (!syncFn) return
@@ -307,8 +319,10 @@ export default function GenericListPage({
   const stats = useMemo(() => {
     if (!items.length) return null
     const total    = items.length
-    const finished = items.filter(i => ['finished','complete','completed','done','closed','resolved','signed_off']
-      .includes((i.status || '').toLowerCase().replace(/ /g,'_').replace(/-/g,'_'))).length
+    const finished = items.filter(i => {
+      const normalized = (i.status || '').toLowerCase().replace(/ /g,'_').replace(/-/g,'_')
+      return isChecklistDone(i.status) || normalized === 'resolved'
+    }).length
     const inProg   = items.filter(i => ['in_progress','inprogress','started','active','open']
       .includes((i.status || '').toLowerCase().replace(/ /g,'_').replace(/-/g,'_'))).length
     const pct = total > 0 ? Math.round((finished / total) * 1000) / 10 : 0
@@ -375,20 +389,6 @@ export default function GenericListPage({
 
   // ── Table columns: user columns + detail icon only ──────────────────────────
   // CxAlloy links are available inside the detail modal (not as a separate column)
-  const detailColumn = {
-    key: '_detail',
-    label: '',
-    render: (_, row) => (
-      <button
-        onClick={e => { e.stopPropagation(); setDetail(row) }}
-        className="p-1.5 rounded-lg text-dark-400 hover:text-sky-400 hover:bg-sky-400/10 transition-all"
-        title="View details"
-      >
-        <ExternalLink size={13} />
-      </button>
-    )
-  }
-
   const renderedTopContent = typeof topContent === 'function'
     ? topContent({
         items,
@@ -455,7 +455,9 @@ export default function GenericListPage({
           >
             <option value="all">{config.label}</option>
             {config.values.map(option => (
-              <option key={option} value={option}>{option}</option>
+              <option key={option} value={option}>
+                {config.formatOptionLabel ? config.formatOptionLabel(option) : option}
+              </option>
             ))}
           </select>
         ))}
@@ -492,7 +494,7 @@ export default function GenericListPage({
       ) : (
         <>
           <Table
-            columns={[...columns, detailColumn]}
+            columns={columns}
             data={visibleItems}
             onRowClick={setDetail}
           />

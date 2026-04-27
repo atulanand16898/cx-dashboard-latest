@@ -254,15 +254,16 @@ function ActionIconButton({ icon: Icon, label, onClick, active, disabled, accent
 }
 
 export default function Navbar() {
-  const { logout, isAdmin } = useAuth()
+  const { logout, isAdmin, provider } = useAuth()
   const { isDark, toggleTheme } = useTheme()
   const {
     activeProject,
     fetchProjects,
     projects,
     selectedProjects,
+    setActiveProject,
+    setSelectedProjects,
     toggleProject,
-    clearSelection,
     period,
     setPeriod,
   } = useProject()
@@ -279,18 +280,24 @@ export default function Navbar() {
   const [projectOpen, setProjectOpen] = useState(false)
   const [search, setSearch] = useState('')
 
-  const visiblePrimaryTabs = PRIMARY_TABS.filter((tab) => !tab.adminOnly || isAdmin)
-  const isProjectMenuRoute = PROJECT_MENU_ITEMS.some((tab) => tab.to === location.pathname)
+  const isPrimavera = provider === 'primavera'
+  const visiblePrimaryTabs = (isPrimavera
+    ? PRIMARY_TABS.filter((tab) => tab.to === '/reports')
+    : PRIMARY_TABS
+  ).filter((tab) => !tab.adminOnly || isAdmin)
+  const visibleProjectMenuItems = isPrimavera ? [] : PROJECT_MENU_ITEMS
+  const isProjectMenuRoute = visibleProjectMenuItems.some((tab) => tab.to === location.pathname)
   const count = selectedProjects.length
-  const primaryProject = selectedProjects[0] || activeProject
-  const secondaryLine = count > 1
-    ? selectedProjects.slice(0, 2).map((project) => project.name).join(', ') + (count > 2 ? ` +${count - 2} more` : '')
+  const primaryProject = activeProject || selectedProjects[0] || null
+  const secondaryLine = isPrimavera
+    ? [primaryProject?.projectCode, primaryProject?.status].filter(Boolean).join(' | ')
     : [primaryProject?.client, primaryProject?.location].filter(Boolean).join(' | ')
 
   const filteredProjects = useMemo(
     () => projects.filter((project) =>
       !search ||
       (project.name || '').toLowerCase().includes(search.toLowerCase()) ||
+      (project.projectCode || '').toLowerCase().includes(search.toLowerCase()) ||
       (project.externalId || '').toLowerCase().includes(search.toLowerCase()) ||
       (project.client || '').toLowerCase().includes(search.toLowerCase()) ||
       (project.location || '').toLowerCase().includes(search.toLowerCase())
@@ -470,6 +477,135 @@ export default function Navbar() {
   const syncDone = !!syncStatus?.complete && !syncRunning
   const dateStr = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
 
+  if (isPrimavera) {
+    return (
+      <header
+        style={{
+          background: 'linear-gradient(180deg, rgba(11,19,35,0.98), rgba(13,22,40,0.98))',
+          borderBottom: '1px solid rgba(255,255,255,0.07)',
+          position: 'sticky',
+          top: 0,
+          zIndex: 40,
+          backdropFilter: 'blur(18px)',
+        }}
+      >
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 16,
+            minHeight: 68,
+            padding: '12px 24px',
+            borderBottom: '1px solid rgba(255,255,255,0.05)',
+          }}
+        >
+          <ModumLogo
+            label="MODUM IQ"
+            sublabel="Primavera Report Workflow"
+            size="sm"
+          />
+
+          <nav style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1, maxWidth: 240 }}>
+            {visiblePrimaryTabs.map((tab) => (
+              <PrimaryTabLink key={tab.to} tab={tab} />
+            ))}
+          </nav>
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <ActionIconButton
+              icon={isDark ? Sun : Moon}
+              label={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
+              onClick={toggleTheme}
+              active={isDark}
+              accent={isDark ? '#fbbf24' : '#cbd5e1'}
+            />
+            <ActionIconButton
+              icon={LogOut}
+              label="Sign out"
+              onClick={async () => {
+                await logout()
+                navigate(PRIVATE_LOGIN_PATH)
+              }}
+              accent="#fda4af"
+            />
+          </div>
+        </div>
+
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 16,
+            minHeight: 74,
+            padding: '14px 24px',
+            background: 'rgba(255,255,255,0.02)',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: 16, minWidth: 0, flex: 1 }}>
+            <div style={{ minWidth: 320, maxWidth: 520, flex: '1 1 420px' }}>
+              <div style={{ fontSize: 10, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.12em', marginBottom: 8 }}>
+                Primavera Project
+              </div>
+              <select
+                value={activeProject?.id || ''}
+                onChange={(event) => {
+                  const nextProject = projects.find((project) => String(project.id) === event.target.value) || null
+                  setActiveProject(nextProject)
+                  setSelectedProjects(nextProject ? [nextProject] : [])
+                }}
+                style={{
+                  width: '100%',
+                  padding: '12px 14px',
+                  borderRadius: 16,
+                  border: '1px solid rgba(255,255,255,0.08)',
+                  background: 'rgba(255,255,255,0.03)',
+                  color: '#f8fafc',
+                  fontSize: 14,
+                  fontWeight: 700,
+                  outline: 'none',
+                }}
+              >
+                {!projects.length ? <option value="">No Primavera projects yet</option> : null}
+                {projects.map((project) => (
+                  <option key={project.id} value={project.id}>
+                    {project.name}{project.projectCode ? ` (${project.projectCode})` : ''}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 8,
+                padding: '10px 12px',
+                borderRadius: 14,
+                border: '1px solid rgba(255,255,255,0.08)',
+                background: 'rgba(255,255,255,0.03)',
+                color: '#a7b6cf',
+                fontSize: 12,
+                fontWeight: 700,
+              }}
+            >
+              <CalendarDays size={15} />
+              <span>{dateStr}</span>
+              <span style={{ color: '#5e718f' }}>|</span>
+              <span>{activeProject?.projectCode || 'Create a report project to begin'}</span>
+            </div>
+          </div>
+
+          <div style={{ textAlign: 'right' }}>
+            <div style={{ fontSize: 10, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.12em' }}>Last Updated</div>
+            <div style={{ fontSize: 12, color: '#dbe7fb', fontWeight: 700 }}>{formatDateTime(lastUpdatedAt)}</div>
+          </div>
+        </div>
+      </header>
+    )
+  }
+
   return (
     <header
       style={{
@@ -494,7 +630,7 @@ export default function Navbar() {
         <div style={{ display: 'flex', alignItems: 'center', minWidth: 260, maxWidth: 340 }}>
           <ModumLogo
             label="MODUM IQ"
-            sublabel="Data-Driven Delivery Decisions"
+            sublabel="Data-Driven Delivery"
             size="sm"
           />
         </div>
@@ -504,7 +640,8 @@ export default function Navbar() {
             <PrimaryTabLink key={tab.to} tab={tab} />
           ))}
 
-          <div ref={moreRef} style={{ position: 'relative', flex: '0 0 122px' }}>
+          {!isPrimavera ? (
+            <div ref={moreRef} style={{ position: 'relative', flex: '0 0 122px' }}>
             <button
               onClick={() => setMoreOpen((open) => !open)}
               style={{
@@ -548,7 +685,7 @@ export default function Navbar() {
                   Project Tools
                 </div>
                 <div style={{ display: 'grid', gap: 6 }}>
-                  {PROJECT_MENU_ITEMS.map((item) => {
+                  {visibleProjectMenuItems.map((item) => {
                     const Icon = item.icon
                     const active = item.to === location.pathname
                     return (
@@ -578,7 +715,8 @@ export default function Navbar() {
                 </div>
               </div>
             )}
-          </div>
+            </div>
+          ) : null}
         </nav>
       </div>
 
@@ -630,10 +768,10 @@ export default function Navbar() {
                 </div>
                 <div style={{ minWidth: 0 }}>
                   <div style={{ fontSize: 10, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.12em', marginBottom: 3 }}>
-                    Selected Project
+                    Scope
                   </div>
                   <div style={{ fontSize: 15, fontWeight: 800, color: '#f8fafc', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                    {count > 1 ? `${count} projects selected` : (primaryProject?.name || 'Select project')}
+                    {primaryProject?.name || 'Select project'}
                   </div>
                   <div style={{ fontSize: 12, color: '#7f8ea8', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                     {secondaryLine || 'Choose a project to scope the dashboard and sync flow.'}
@@ -694,26 +832,7 @@ export default function Navbar() {
                   }}
                 >
                   <span>{projects.length} projects loaded</span>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                    <span>{count} selected</span>
-                    {count > 0 && (
-                      <button
-                        onClick={clearSelection}
-                        style={{
-                          borderRadius: 999,
-                          border: '1px solid rgba(255,255,255,0.08)',
-                          background: 'transparent',
-                          color: '#cbd5e1',
-                          cursor: 'pointer',
-                          fontSize: 11,
-                          fontWeight: 700,
-                          padding: '4px 10px',
-                        }}
-                      >
-                        Clear
-                      </button>
-                    )}
-                  </div>
+                  <span>{count > 0 ? 'Single-select scope' : 'Pick one project'}</span>
                 </div>
 
                 <div style={{ maxHeight: 360, overflowY: 'auto' }}>
@@ -725,11 +844,16 @@ export default function Navbar() {
 
                   {filteredProjects.map((project) => {
                     const selected = selectedProjects.some((item) => item.id === project.id)
-                    const meta = [project.client, project.location, project.status].filter(Boolean).join(' | ')
+                    const meta = isPrimavera
+                      ? [project.projectCode, project.status].filter(Boolean).join(' | ')
+                      : [project.client, project.location, project.status].filter(Boolean).join(' | ')
                     return (
                       <div
                         key={project.id}
-                        onClick={() => toggleProject(project)}
+                        onClick={() => {
+                          toggleProject(project)
+                          setProjectOpen(false)
+                        }}
                         style={{
                           display: 'flex',
                           alignItems: 'center',
@@ -758,7 +882,7 @@ export default function Navbar() {
                             background: selected ? 'rgba(14,165,233,0.18)' : 'rgba(255,255,255,0.04)',
                           }}
                         >
-                          {selected ? 'SELECTED' : 'SELECT'}
+                          {selected ? 'IN SCOPE' : 'SELECT'}
                         </span>
                       </div>
                     )
@@ -769,6 +893,30 @@ export default function Navbar() {
           </div>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+            <button
+              onClick={startSync}
+              disabled={syncRunning || !activeProject}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 8,
+                padding: '12px 20px',
+                borderRadius: 16,
+                border: `1px solid ${syncRunning ? 'rgba(125,211,252,0.45)' : 'rgba(255,255,255,0.10)'}`,
+                background: syncRunning ? 'rgba(14,165,233,0.18)' : 'linear-gradient(135deg, rgba(59,130,246,0.18), rgba(14,165,233,0.12))',
+                color: syncRunning ? '#7dd3fc' : (!activeProject ? '#4b5563' : '#e2e8f0'),
+                fontSize: 13,
+                fontWeight: 800,
+                cursor: syncRunning || !activeProject ? 'not-allowed' : 'pointer',
+                opacity: syncRunning || !activeProject ? 0.72 : 1,
+                transition: 'all 0.18s ease',
+                boxShadow: syncRunning ? '0 10px 24px rgba(14,165,233,0.18)' : '0 10px 24px rgba(37,99,235,0.14)',
+              }}
+              title={activeProject ? `Sync ${activeProject.name}` : 'Select a project first'}
+            >
+              <RefreshCw size={15} style={syncRunning ? { animation: 'spin 1s linear infinite' } : undefined} />
+              {syncRunning ? 'Syncing Scope...' : 'Sync Scope'}
+            </button>
             <div
               style={{
                 display: 'inline-flex',
@@ -834,15 +982,6 @@ export default function Navbar() {
             <div style={{ fontSize: 10, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.12em' }}>Last Updated</div>
             <div style={{ fontSize: 12, color: '#dbe7fb', fontWeight: 700 }}>{formatDateTime(lastUpdatedAt)}</div>
           </div>
-          <ActionIconButton
-            icon={RefreshCw}
-            label={activeProject ? `Sync ${activeProject.name}` : 'Select a project first'}
-            onClick={startSync}
-            active={syncRunning}
-            disabled={syncRunning || !activeProject}
-            accent={syncRunning ? '#7dd3fc' : '#e2e8f0'}
-            spinning={syncRunning}
-          />
           <ActionIconButton
             icon={isDark ? Sun : Moon}
             label={isDark ? 'Switch to light mode' : 'Switch to dark mode'}

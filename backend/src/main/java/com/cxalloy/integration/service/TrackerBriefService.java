@@ -80,7 +80,7 @@ public class TrackerBriefService {
         // including checklist_approved and complete (emitted by updated ChecklistService)
         long finishedChecklists = 0;
         for (String s : new String[]{
-                "checklist_approved", "complete", "finished", "completed",
+                "checklist_approved", "tag_complete", "complete", "finished", "completed",
                 "done", "closed", "signed_off", "approved"}) {
             finishedChecklists += checklistRepository.findByProjectIdAndStatus(projectId, s).stream()
                     .filter(checklist -> providerContextService.matchesCurrentProvider(checklist.getProvider()))

@@ -4,7 +4,8 @@ import java.util.Locale;
 
 public enum DataProvider {
     CXALLOY("cxalloy", "CxAlloy"),
-    FACILITY_GRID("facilitygrid", "Facility Grid");
+    FACILITY_GRID("facilitygrid", "Facility Grid"),
+    PRIMAVERA("primavera", "Primavera P6");
 
     private final String key;
     private final String label;

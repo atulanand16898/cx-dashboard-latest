@@ -15,6 +15,8 @@ public class AdminCredentialsProperties {
     private String cxalloyPassword = "admin123";
     private String facilitygridUsername = "fg-admin";
     private String facilitygridPassword = "fgadmin123";
+    private String primaveraUsername = "p6-admin";
+    private String primaveraPassword = "p6admin123";
 
     public String getCxalloyUsername() {
         return cxalloyUsername;
@@ -48,12 +50,36 @@ public class AdminCredentialsProperties {
         this.facilitygridPassword = facilitygridPassword;
     }
 
+    public String getPrimaveraUsername() {
+        return primaveraUsername;
+    }
+
+    public void setPrimaveraUsername(String primaveraUsername) {
+        this.primaveraUsername = primaveraUsername;
+    }
+
+    public String getPrimaveraPassword() {
+        return primaveraPassword;
+    }
+
+    public void setPrimaveraPassword(String primaveraPassword) {
+        this.primaveraPassword = primaveraPassword;
+    }
+
     public String usernameFor(DataProvider provider) {
-        return provider == DataProvider.FACILITY_GRID ? facilitygridUsername : cxalloyUsername;
+        return switch (provider) {
+            case FACILITY_GRID -> facilitygridUsername;
+            case PRIMAVERA -> primaveraUsername;
+            case CXALLOY -> cxalloyUsername;
+        };
     }
 
     public String passwordFor(DataProvider provider) {
-        return provider == DataProvider.FACILITY_GRID ? facilitygridPassword : cxalloyPassword;
+        return switch (provider) {
+            case FACILITY_GRID -> facilitygridPassword;
+            case PRIMAVERA -> primaveraPassword;
+            case CXALLOY -> cxalloyPassword;
+        };
     }
 
     public boolean matchesProviderAdmin(DataProvider provider, String username) {
@@ -63,7 +89,8 @@ public class AdminCredentialsProperties {
     public boolean isAdminUsername(String username) {
         String normalized = normalize(username);
         return normalized.equals(normalize(cxalloyUsername))
-                || normalized.equals(normalize(facilitygridUsername));
+                || normalized.equals(normalize(facilitygridUsername))
+                || normalized.equals(normalize(primaveraUsername));
     }
 
     private String normalize(String value) {

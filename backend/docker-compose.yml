@@ -15,8 +15,8 @@ services:
 
   backend:
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: backend/Dockerfile
     depends_on:
       postgres:
         condition: service_healthy
@@ -33,9 +33,13 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_DEFAULT_MODEL: ${OPENAI_DEFAULT_MODEL:-gpt-5.4}
       APP_FILES_STORAGE_DIR: ${APP_FILES_STORAGE_DIR:-/tmp/project-files}
+      XER_PROCESSING_STORAGE_DIR: ${XER_PROCESSING_STORAGE_DIR:-/tmp/xer-processing}
+      XER_PROCESSING_PYTHON_COMMAND: ${XER_PROCESSING_PYTHON_COMMAND:-python3}
+      XER_PROCESSING_PROCESSOR_SCRIPT: ${XER_PROCESSING_PROCESSOR_SCRIPT:-/app/xer_processing/python/process_baseline.py}
       JWT_SECRET: ${JWT_SECRET:-replace-me-with-a-long-random-secret}
     volumes:
       - cxalloy-project-files:/tmp/project-files
+      - cxalloy-xer-processing-data:/tmp/xer-processing
     ports:
       - "8081:8081"
     restart: unless-stopped
@@ -43,3 +47,4 @@ services:
 volumes:
   cxalloy-postgres-data:
   cxalloy-project-files:
+  cxalloy-xer-processing-data:

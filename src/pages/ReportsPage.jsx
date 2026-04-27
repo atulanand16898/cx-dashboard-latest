@@ -30,8 +30,10 @@ import {
 } from 'lucide-react'
 import toast from 'react-hot-toast'
 import { useProject } from '../context/ProjectContext'
+import { useAuth } from '../context/AuthContext'
 import { reportsApi } from '../services/api'
 import { Modal } from '../components/ui'
+import PrimaveraReportsPage from './PrimaveraReportsPage'
 
 const TEMPLATE_STORAGE_KEY = 'modum_iq_report_templates_v1'
 
@@ -78,6 +80,7 @@ function defaultSectionSettings(sectionId, existing = {}) {
     issueStatuses: Array.isArray(existing.issueStatuses) ? existing.issueStatuses : [],
     checklistStatuses: Array.isArray(existing.checklistStatuses) ? existing.checklistStatuses : [],
     equipmentTypes: Array.isArray(existing.equipmentTypes) ? existing.equipmentTypes : [],
+    pastedTable: existing.pastedTable || '',
   }
 }
 
@@ -145,6 +148,8 @@ function createDraft(template = {}) {
     shiftWindow: template.shiftWindow || '',
     reportAuthor: template.reportAuthor || '',
     peopleOnSite: template.peopleOnSite || '',
+    logoLeft: template.logoLeft || '',
+    logoRight: template.logoRight || '',
     sectionSettings: buildSectionSettings(sections, template.sectionSettings),
   }
 }
@@ -228,6 +233,13 @@ function pluralize(value, singular, plural = `${singular}s`) {
   return value === 1 ? singular : plural
 }
 
+function parseTsvTable(tsv) {
+  if (!tsv || !tsv.trim()) return null
+  const rows = tsv.trim().split('\n').map(row => row.split('\t'))
+  if (!rows.length || !rows[0].length) return null
+  return rows
+}
+
 function sectionById(sectionId) {
   return SECTION_LIBRARY.find(section => section.id === sectionId) || SECTION_LIBRARY[0]
 }
@@ -273,6 +285,8 @@ function draftFromReport(report) {
     shiftWindow: manual.shiftWindow || '',
     reportAuthor: manual.reportAuthor || '',
     peopleOnSite: manual.peopleOnSite || '',
+    logoLeft: manual.logoLeft || '',
+    logoRight: manual.logoRight || '',
     sectionSettings,
   })
 }
@@ -460,6 +474,38 @@ function DataTable({ rows, maxRows = 6 }) {
   )
 }
 
+function PastedTable({ tsv }) {
+  const rows = parseTsvTable(tsv)
+  if (!rows || rows.length === 0) return null
+  const [headers, ...body] = rows
+  return (
+    <div style={{ overflowX: 'auto', border: '1px solid var(--border)', borderRadius: 14 }}>
+      <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 400 }}>
+        <thead>
+          <tr style={{ background: 'rgba(148,163,184,0.08)' }}>
+            {headers.map((h, i) => (
+              <th key={i} style={{ padding: '10px 12px', textAlign: 'left', fontSize: 10, letterSpacing: '0.08em', textTransform: 'uppercase', color: '#94a3b8', borderBottom: '1px solid var(--border)' }}>
+                {h}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {body.map((row, ri) => (
+            <tr key={ri}>
+              {row.map((cell, ci) => (
+                <td key={ci} style={{ padding: '10px 12px', fontSize: 12, color: '#cbd5e1', borderBottom: ri === body.length - 1 ? 'none' : '1px solid rgba(148,163,184,0.08)' }}>
+                  {cell}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
 function PlaceholderSection({ meta, title, text, settings }) {
   return (
     <SurfaceCard style={{ padding: 16 }}>
@@ -484,6 +530,11 @@ function PlaceholderSection({ meta, title, text, settings }) {
           This section is part of the template. Once you generate the report, it will render the insight block, graph, and table for the chosen date range.
         </div>
       )}
+      {meta.id === 'custom' && settings?.pastedTable ? (
+        <div style={{ marginTop: 14 }}>
+          <PastedTable tsv={settings.pastedTable} />
+        </div>
+      ) : null}
       {meta.id === 'progressphotos' ? (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 10, marginTop: 14 }}>
           {[1, 2, 3].map(slot => (
@@ -603,6 +654,11 @@ function SectionPreviewCard({ sectionId, previewReport, draft, settings }) {
 
       {settings?.narrative ? <div style={{ fontSize: 13, color: '#cbd5e1', lineHeight: 1.7, whiteSpace: 'pre-wrap', marginBottom: 14 }}>{settings.narrative}</div> : null}
       {sectionData.text && sectionData.text !== settings?.narrative ? <div style={{ fontSize: 13, color: '#cbd5e1', lineHeight: 1.7, whiteSpace: 'pre-wrap', marginBottom: 14 }}>{sectionData.text}</div> : null}
+      {sectionId === 'custom' && settings?.pastedTable ? (
+        <div style={{ marginBottom: 14 }}>
+          <PastedTable tsv={settings.pastedTable} />
+        </div>
+      ) : null}
 
       <div style={{ display: 'grid', gap: 14 }}>
         {settings?.includeChart !== false && sectionData.byTag ? <CountBarChart title="Tag distribution" values={sectionData.byTag} accent="#f59e0b" /> : null}
@@ -765,7 +821,11 @@ function TogglePill({ active, onClick, children }) {
 }
 
 export default function ReportsPage() {
+  const { provider } = useAuth()
   const { projects, activeProject, setActiveProject } = useProject()
+  if (provider === 'primavera') {
+    return <PrimaveraReportsPage />
+  }
   const [view, setView] = useState('gallery')
   const [draft, setDraft] = useState(createDraft())
   const [userTemplates, setUserTemplates] = useState([])
@@ -831,6 +891,13 @@ export default function ReportsPage() {
   const currentEditingSettings = currentEditingSectionId ? defaultSectionSettings(currentEditingSectionId, draft.sectionSettings?.[editingSectionIndex]) : null
 
   function updateDraft(field, value) { setDraft(current => ({ ...current, [field]: value })) }
+  function handleLogoUpload(field, event) {
+    const file = event.target.files?.[0]
+    if (!file) return
+    const reader = new FileReader()
+    reader.onload = () => updateDraft(field, reader.result)
+    reader.readAsDataURL(file)
+  }
   function updateSectionSettings(index, patch) {
     setDraft(current => ({
       ...current,
@@ -948,6 +1015,8 @@ export default function ReportsPage() {
         shiftWindow: draft.shiftWindow,
         reportAuthor: draft.reportAuthor,
         peopleOnSite: draft.peopleOnSite,
+        logoLeft: draft.logoLeft,
+        logoRight: draft.logoRight,
       })
       const report = response.data.data
       setPreviewReport(report)
@@ -1219,6 +1288,32 @@ export default function ReportsPage() {
               <input value={draft.reportAuthor} onChange={event => updateDraft('reportAuthor', event.target.value)} placeholder="Prepared by" style={{ width: '100%', padding: '10px 12px', borderRadius: 12, background: 'var(--bg-base)', border: '1px solid var(--border)', color: 'var(--text-primary)', fontSize: 12 }} />
             </ModalField>
           </div>
+          <ModalField label="Cover logos">
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <div style={{ fontSize: 11, color: '#64748b' }}>Left logo</div>
+                {draft.logoLeft ? (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <img src={draft.logoLeft} alt="Left logo" style={{ maxHeight: 40, maxWidth: 120, objectFit: 'contain', borderRadius: 8, border: '1px solid var(--border)' }} />
+                    <button type="button" onClick={() => updateDraft('logoLeft', '')} style={{ fontSize: 11, color: '#fca5a5', background: 'transparent', border: 'none', cursor: 'pointer', padding: '4px 8px' }}>Remove</button>
+                  </div>
+                ) : (
+                  <input type="file" accept="image/*" onChange={event => handleLogoUpload('logoLeft', event)} style={{ fontSize: 12, color: 'var(--text-primary)' }} />
+                )}
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <div style={{ fontSize: 11, color: '#64748b' }}>Right logo</div>
+                {draft.logoRight ? (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <img src={draft.logoRight} alt="Right logo" style={{ maxHeight: 40, maxWidth: 120, objectFit: 'contain', borderRadius: 8, border: '1px solid var(--border)' }} />
+                    <button type="button" onClick={() => updateDraft('logoRight', '')} style={{ fontSize: 11, color: '#fca5a5', background: 'transparent', border: 'none', cursor: 'pointer', padding: '4px 8px' }}>Remove</button>
+                  </div>
+                ) : (
+                  <input type="file" accept="image/*" onChange={event => handleLogoUpload('logoRight', event)} style={{ fontSize: 12, color: 'var(--text-primary)' }} />
+                )}
+              </div>
+            </div>
+          </ModalField>
           <ModalField label="Template description">
             <textarea value={draft.description} onChange={event => updateDraft('description', event.target.value)} placeholder="What is this template for?" style={{ width: '100%', minHeight: 86, padding: '12px 12px', borderRadius: 12, background: 'var(--bg-base)', border: '1px solid var(--border)', color: 'var(--text-primary)', fontSize: 12, resize: 'vertical' }} />
           </ModalField>
@@ -1240,6 +1335,21 @@ export default function ReportsPage() {
             <ModalField label="Section notes" hint="Use this for narrative, headlines, or manual context for the section.">
               <textarea value={currentEditingSettings.narrative} onChange={event => updateSectionSettings(editingSectionIndex, { narrative: event.target.value })} placeholder={`Notes for ${currentEditingMeta.label}`} style={{ width: '100%', minHeight: 96, padding: '12px 12px', borderRadius: 12, background: 'var(--bg-base)', border: '1px solid var(--border)', color: 'var(--text-primary)', fontSize: 12, resize: 'vertical' }} />
             </ModalField>
+            {currentEditingSectionId === 'custom' ? (
+              <ModalField label="Paste table from Excel" hint="Copy cells from Excel or Google Sheets and paste here. First row becomes the header.">
+                <textarea
+                  value={currentEditingSettings.pastedTable}
+                  onChange={event => updateSectionSettings(editingSectionIndex, { pastedTable: event.target.value })}
+                  placeholder="Paste Excel data here..."
+                  style={{ width: '100%', minHeight: 100, padding: '12px 12px', borderRadius: 12, background: 'var(--bg-base)', border: '1px solid var(--border)', color: 'var(--text-primary)', fontSize: 12, resize: 'vertical', fontFamily: 'monospace' }}
+                />
+                {currentEditingSettings.pastedTable ? (
+                  <div style={{ marginTop: 10 }}>
+                    <PastedTable tsv={currentEditingSettings.pastedTable} />
+                  </div>
+                ) : null}
+              </ModalField>
+            ) : null}
             <ModalField label="Output blocks" hint="These control how the section preview renders and prepare the section for later output wiring.">
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                 <TogglePill active={currentEditingSettings.includeInsights} onClick={() => updateSectionSettings(editingSectionIndex, { includeInsights: !currentEditingSettings.includeInsights })}>Insights</TogglePill>

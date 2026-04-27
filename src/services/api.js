@@ -1,50 +1,62 @@
 import axios from 'axios'
 import { PRIVATE_LOGIN_PATH } from '../config/appRoutes'
 
+const normalizeBaseUrl = (value) => value ? value.replace(/\/$/, '') : ''
+const directBackendOrigin = normalizeBaseUrl(import.meta.env.VITE_BACKEND_URL || 'http://127.0.0.1:8081')
+const directApiBaseURL = import.meta.env.DEV ? `${directBackendOrigin}/api` : '/api'
+
 const api = axios.create({
   baseURL: '/api',
-  headers: { 'Content-Type': 'application/json' },
+})
+
+const uploadApi = axios.create({
+  baseURL: directApiBaseURL,
 })
 
 const isAuthRoute = (url = '') =>
   url.includes('/auth/login') || url.includes('/auth/refresh') || url.includes('/auth/lead')
 
-// Attach JWT token to every request
-api.interceptors.request.use((config) => {
-  const token = localStorage.getItem('access_token')
-  if (token && !isAuthRoute(config.url)) {
-    config.headers.Authorization = `Bearer ${token}`
-  }
-  return config
-})
+const attachAuthInterceptors = (client, refreshBaseUrl) => {
+  client.interceptors.request.use((config) => {
+    const token = localStorage.getItem('access_token')
+    if (token && !isAuthRoute(config.url)) {
+      config.headers = config.headers || {}
+      config.headers.Authorization = `Bearer ${token}`
+    }
+    return config
+  })
 
-// Handle 401 - token expired
-api.interceptors.response.use(
-  (res) => res,
-  async (error) => {
-    if (error.response?.status === 401 && !isAuthRoute(error.config?.url) && !error.config?._retry) {
-      const refreshToken = localStorage.getItem('refresh_token')
-      if (refreshToken) {
-        try {
-          error.config._retry = true
-          const resp = await axios.post('/api/auth/refresh', { refreshToken })
-          const { accessToken, refreshToken: newRefresh } = resp.data.data
-          localStorage.setItem('access_token', accessToken)
-          localStorage.setItem('refresh_token', newRefresh)
-          error.config.headers.Authorization = `Bearer ${accessToken}`
-          return api(error.config)
-        } catch {
+  client.interceptors.response.use(
+    (res) => res,
+    async (error) => {
+      if (error.response?.status === 401 && !isAuthRoute(error.config?.url) && !error.config?._retry) {
+        const refreshToken = localStorage.getItem('refresh_token')
+        if (refreshToken) {
+          try {
+            error.config._retry = true
+            const refreshUrl = `${refreshBaseUrl}/auth/refresh`
+            const resp = await axios.post(refreshUrl, { refreshToken })
+            const { accessToken, refreshToken: newRefresh } = resp.data.data
+            localStorage.setItem('access_token', accessToken)
+            localStorage.setItem('refresh_token', newRefresh)
+            error.config.headers.Authorization = `Bearer ${accessToken}`
+            return client(error.config)
+          } catch {
+            localStorage.clear()
+            window.location.href = PRIVATE_LOGIN_PATH
+          }
+        } else {
           localStorage.clear()
           window.location.href = PRIVATE_LOGIN_PATH
         }
-      } else {
-        localStorage.clear()
-        window.location.href = PRIVATE_LOGIN_PATH
       }
+      return Promise.reject(error)
     }
-    return Promise.reject(error)
-  }
-)
+  )
+}
+
+attachAuthInterceptors(api, '/api')
+attachAuthInterceptors(uploadApi, directApiBaseURL)
 
 // Auth
 export const authApi = {
@@ -72,6 +84,26 @@ export const reportsApi = {
     params: { format },
     responseType: 'blob',
   }),
+}
+
+export const xerProcessingApi = {
+  listProjects: () => api.get('/xer-processing/projects'),
+  getProject: (id) => api.get(`/xer-processing/projects/${id}`),
+  createProject: (payload) => api.post('/xer-processing/projects', payload),
+  getWorkflow: (projectId) => api.get(`/xer-processing/projects/${projectId}/workflow`),
+  uploadBaseline: (projectId, file) => {
+    const formData = new FormData()
+    formData.append('file', file)
+    return uploadApi.post(`/xer-processing/projects/${projectId}/baseline-upload`, formData)
+  },
+  getProgressMeasurementOptions: (projectId) =>
+    api.get(`/xer-processing/projects/${projectId}/progress-measurement/options`),
+  saveProgressMeasurement: (projectId, payload) =>
+    api.post(`/xer-processing/projects/${projectId}/progress-measurement`, payload),
+  getBaselineAnalysis: (projectId, dataDate) =>
+    api.get(`/xer-processing/projects/${projectId}/baseline-analysis`, { params: dataDate ? { dataDate } : {} }),
+  getDcmaCheckpoints: (projectId) =>
+    api.get(`/xer-processing/projects/${projectId}/dcma-checkpoints`),
 }
 
 // Projects
@@ -215,9 +247,7 @@ export const copilotApi = {
     const formData = new FormData()
     formData.append('payload', JSON.stringify(payload))
     files.forEach(file => formData.append('files', file))
-    return api.post('/copilot/chat', formData, {
-      headers: { 'Content-Type': 'multipart/form-data' },
-    })
+    return uploadApi.post('/copilot/chat', formData)
   },
 }
 
