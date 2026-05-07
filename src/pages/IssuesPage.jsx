@@ -6,6 +6,7 @@ import { Table, StatusBadge, PriorityBadge, Modal, SyncResultCard, EmptyState, S
 import { useLocation } from 'react-router-dom'
 import toast from 'react-hot-toast'
 import { AlertCircle } from 'lucide-react'
+import { emitSyncRefresh, useSyncRefreshSignal } from '../hooks/useSyncRefreshSignal'
 
 const PAGE_SIZE = 20
 const defaultForm = { title: '', description: '', status: 'open', priority: 'medium', assignee: '', dueDate: '' }
@@ -60,6 +61,7 @@ function normalizeIssueStatus(status) {
 export default function IssuesPage() {
   const { activeProject } = useProject()
   const location = useLocation()
+  const refreshSignal = useSyncRefreshSignal(activeProject?.externalId ? [activeProject.externalId] : [])
   const [issues, setIssues] = useState([])
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
@@ -81,7 +83,7 @@ export default function IssuesPage() {
     finally { setLoading(false) }
   }
 
-  useEffect(() => { load() }, [activeProject])
+  useEffect(() => { load() }, [activeProject, refreshSignal])
   useEffect(() => { setVisibleCount(PAGE_SIZE) }, [search, statusFilter, activeProject])
   useEffect(() => {
     const preset = location.state?.listPreset
@@ -140,7 +142,8 @@ export default function IssuesPage() {
       const res = await issuesApi.syncAll(activeProject?.externalId)
       setSyncResult(res.data.data)
       toast.success('Issues synced!')
-      load()
+      await load()
+      emitSyncRefresh({ projectId: activeProject?.externalId, scope: 'issues-sync' })
     } catch (err) { toast.error('Sync failed') }
     finally { setSyncing(false) }
   }

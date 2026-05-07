@@ -411,6 +411,24 @@ public class SavedReportService {
             );
             List<Map<String, Object>> completionByCategory = buildChecklistCompletionByCategory(checklists);
             List<Map<String, Object>> weekOverWeek = buildChecklistWeekOverWeek(checklists, range, 8);
+            LocalDate rangeFrom = range != null ? range.from() : null;
+            LocalDate rangeTo   = range != null ? range.to()   : null;
+            // Build a closure-count lookup from ALL closed checklists
+            Map<LocalDate, Long> closureByDate = checklists.stream()
+                    .filter(this::isClosedChecklist)
+                    .map(this::checklistFinishedDate)
+                    .filter(Objects::nonNull)
+                    .collect(Collectors.groupingBy(d -> d, Collectors.counting()));
+            // Fill every day in the report range — 0 if no closures that day
+            List<Map<String, Object>> dailyClosuresInRange = new java.util.ArrayList<>();
+            if (rangeFrom != null && rangeTo != null) {
+                for (LocalDate d = rangeFrom; !d.isAfter(rangeTo); d = d.plusDays(1)) {
+                    dailyClosuresInRange.add(row("date", d.toString(), "closed", closureByDate.getOrDefault(d, 0L)));
+                }
+            } else {
+                // Fallback: just the days we have data for
+                buildDailyClosureRows(checklists).forEach(dailyClosuresInRange::add);
+            }
             List<Map<String, Object>> checklistRows = checklists.stream()
                     .sorted(Comparator.comparing(checklist -> isClosedChecklist(checklist) ? 1 : 0))
                     .limit(rowLimit)
@@ -448,6 +466,11 @@ public class SavedReportService {
                     r -> longValue(r.get("total")) - longValue(r.get("closed")),
                     (l, rr) -> l, LinkedHashMap::new)));
             checklistsEntry.put("weekOverWeek", weekOverWeek);
+            checklistsEntry.put("dailyClosuresInRange", dailyClosuresInRange);
+            List<Map<String, Object>> allDailyRows = buildDailyClosureRows(checklists);
+            double overallAvgPerDay = allDailyRows.isEmpty() ? 0.0
+                    : allDailyRows.stream().mapToLong(r -> longValue(r.get("closed"))).sum() / (double) allDailyRows.size();
+            checklistsEntry.put("overallAvgPerDay", overallAvgPerDay);
             checklistsEntry.put("outlierRows", buildChecklistOutlierRows(checklists));
             checklistsEntry.put("categoryStatusRows", buildChecklistCategoryStatusTable(checklists));
             checklistsEntry.put("inProgressCount", inProgressCount);
@@ -546,6 +569,7 @@ public class SavedReportService {
             equipSection.put("rows", equipmentRows);
             equipSection.put("totalRows", equipment.size());
             equipSection.put("disciplineMatrix", buildEquipmentDisciplineMatrix(equipment, checklists));
+            equipSection.put("dailyClosures", buildDailyClosureRows(checklists));
             sectionData.put("equipment", equipSection);
         }
 
@@ -608,7 +632,7 @@ public class SavedReportService {
 
         double overallCompletion = percent(closedChecklists, totalChecklists);
         double planCompletion = calculatePlannedCompletion(checklists);
-        double recentDailyRunRate = calculateDailyRunRate(checklists, 28);
+        double recentDailyRunRate = calculateDailyRunRate(checklists);
         LocalDate forecastDate = estimateForecastDate(checklists, recentDailyRunRate);
         Map<String, Object> tagVelocity = buildTagVelocity(checklists, range);
         List<Map<String, Object>> keyProjectDelivery = buildKeyProjectDeliveryRows(checklists, range);
@@ -903,18 +927,13 @@ public class SavedReportService {
                 .filter(Objects::nonNull)
                 .max(LocalDate::compareTo)
                 .orElse(null);
-        long activeWeeks = 0;
-        long activeBusinessDays = 0;
-        if (firstClosed != null && lastClosed != null) {
-            activeWeeks = Math.max(1, (daysBetween(firstClosed, lastClosed) / 7) + 1);
-            LocalDate cursor = firstClosed;
-            while (!cursor.isAfter(lastClosed)) {
-                if (cursor.getDayOfWeek().getValue() <= 5) {
-                    activeBusinessDays++;
-                }
-                cursor = cursor.plusDays(1);
-            }
-        }
+        // Use calendar days between first and last close — matches frontend TrackerPulsePage algorithm
+        long calendarDays = (firstClosed != null && lastClosed != null)
+                ? Math.max(1, java.time.temporal.ChronoUnit.DAYS.between(firstClosed, lastClosed))
+                : 1;
+        double avgPerDay = closed.size() / (double) calendarDays;
+        // avgPerWeek = avgPerDay * 7 — matches frontend: runRatePerWeek = +(avgPerDay * 7).toFixed(1)
+        double avgPerWeek = avgPerDay * 7.0;
         long closedInWindow = closed.stream()
                 .filter(checklist -> withinRange(checklistFinishedDate(checklist), range))
                 .count();
@@ -922,8 +941,8 @@ public class SavedReportService {
                 .filter(checklist -> withinRange(checklistStartedDate(checklist), range))
                 .count();
         return row(
-                "avgPerWeek", formatOneDecimal(closed.size() / (double) Math.max(1, activeWeeks)),
-                "avgPerDay", formatOneDecimal(closed.size() / (double) Math.max(1, activeBusinessDays)),
+                "avgPerWeek", formatOneDecimal(avgPerWeek),
+                "avgPerDay", formatOneDecimal(avgPerDay),
                 "closedInWindow", closedInWindow,
                 "startedInWindow", startedInWindow,
                 "weekOverWeek", buildChecklistWeekOverWeek(checklists, range, 8)
@@ -1326,6 +1345,22 @@ public class SavedReportService {
     private String formatChecklistPct(long[] totClosed) {
         if (totClosed[0] == 0) return "0%";
         return formatPercent(percent(totClosed[1], totClosed[0]));
+    }
+
+    private List<Map<String, Object>> buildDailyClosureRows(List<Checklist> checklists) {
+        Map<LocalDate, Long> byDate = checklists.stream()
+                .filter(this::isClosedChecklist)
+                .map(this::checklistFinishedDate)
+                .filter(Objects::nonNull)
+                .collect(Collectors.groupingBy(d -> d, Collectors.counting()));
+        if (byDate.isEmpty()) return List.of();
+        LocalDate first = byDate.keySet().stream().min(LocalDate::compareTo).orElseThrow();
+        LocalDate last  = byDate.keySet().stream().max(LocalDate::compareTo).orElseThrow();
+        List<Map<String, Object>> result = new java.util.ArrayList<>();
+        for (LocalDate d = first; !d.isAfter(last); d = d.plusDays(1)) {
+            result.add(row("date", d.toString(), "closed", byDate.getOrDefault(d, 0L)));
+        }
+        return result;
     }
 
     private List<Map<String, Object>> buildOverdueChecklistRows(List<Checklist> checklists) {
@@ -2188,19 +2223,23 @@ public class SavedReportService {
                     .section-heading { font-size: 8pt; font-weight: 800; text-transform: uppercase; letter-spacing: 0.14em; color: #fff; background: #1a2744; padding: 5px 9px; margin: 10px 0 7px; }
 
                     /* ── KPI cards ── */
-                    .kpi-grid { display: grid; gap: 5px; margin: 6px 0; }
+                    .kpi-grid { display: grid; gap: 6px; margin: 6px 0; }
                     .kpi-grid--6 { grid-template-columns: repeat(6, 1fr); }
                     .kpi-grid--5 { grid-template-columns: repeat(5, 1fr); }
                     .kpi-grid--4 { grid-template-columns: repeat(4, 1fr); }
-                    .kpi-card { padding: 18px 7px 10px; text-align: center; background: #1a2744; border-radius: 6px 6px 0 0; border-bottom: 3px solid #c9a227; color: #fff; }
-                    .kpi-card--green { background: #1a5c2a; }
-                    .kpi-card--amber { background: #7a4200; }
-                    .kpi-card--teal  { background: #0e4c5c; }
-                    .kpi-card--inprogress { background: #5c4000; }
-                    .kpi-card--cxa { background: #0e3d5c; }
-                    .kpi-card__number { font-size: 20pt; font-weight: 800; color: #fff; line-height: 1; }
-                    .kpi-card__label { font-size: 6pt; color: rgba(255,255,255,0.75); margin-top: 5px; text-transform: uppercase; letter-spacing: 0.06em; }
+                    .kpi-card { padding: 16px 8px 10px; text-align: center; background: #fff; border: 1px solid #1a2744; border-radius: 6px 6px 0 0; border-bottom: 3px solid #c9a227; color: #1a2744; }
+                    .kpi-card--green     { border-bottom-color: #22c55e; }
+                    .kpi-card--amber     { border-bottom-color: #f59e0b; }
+                    .kpi-card--teal      { border-bottom-color: #0ea5e9; }
+                    .kpi-card--inprogress { border-bottom-color: #f59e0b; }
+                    .kpi-card--cxa       { border-bottom-color: #3b82f6; }
+                    .kpi-card__number { font-size: 20pt; font-weight: 800; color: #1a2744; line-height: 1; }
+                    .kpi-card__label { font-size: 6pt; color: #64748b; margin-top: 5px; text-transform: uppercase; letter-spacing: 0.06em; }
                     .kpi-card__sub { font-size: 6.5pt; color: #c9a227; font-weight: 800; margin-top: 3px; }
+                    .kpi-card--green     .kpi-card__sub { color: #22c55e; }
+                    .kpi-card--amber     .kpi-card__sub { color: #d97706; }
+                    .kpi-card--inprogress .kpi-card__sub { color: #d97706; }
+                    .kpi-card--cxa       .kpi-card__sub { color: #3b82f6; }
 
                     /* ── Insight / key insights box ── */
                     .insight-box { background: #f0f4fa; border-left: 4px solid #1a2744; padding: 8px 11px; margin: 6px 0; }
@@ -2311,7 +2350,9 @@ public class SavedReportService {
             } else if ("equipment".equals(sectionId)) {
                 html.append(renderEquipmentPageHtml(settings, reportData, summary, executive, report, project));
             } else {
-                html.append("<div class=\"page-banner\"><div class=\"page-banner__title\">")
+                html.append("<div class=\"page-banner\">");
+                html.append(bannerLogosHtml(reportData));
+                html.append("<div class=\"page-banner__title\">")
                         .append(escapeHtml(resolveSectionTitle(sectionId, settings)))
                         .append("</div></div>");
                 html.append("<div class=\"page-content\">");
@@ -2345,9 +2386,6 @@ public class SavedReportService {
         String client = firstNonBlank(stringValue(projectDetails.get("client")), "");
         String location = firstNonBlank(stringValue(projectDetails.get("location")), "");
         String author = firstNonBlank(stringValue(projectDetails.get("author")), report.getGeneratedBy());
-        Map<String, Object> manualContent = asMap(reportData.get("manualContent"));
-        String logoLeft = stringValue(manualContent.get("logoLeft"));
-        String logoRight = stringValue(manualContent.get("logoRight"));
         long checklistTotal = longValue(asMap(summary.get("checklists")).get("total"));
         long checklistClosed = longValue(asMap(summary.get("checklists")).get("closed"));
         long checklistOpen = longValue(asMap(summary.get("checklists")).get("open"));
@@ -2364,20 +2402,7 @@ public class SavedReportService {
 
         // Banner
         sb.append("<div class=\"page-banner\">");
-        if (StringUtils.hasText(logoLeft) || StringUtils.hasText(logoRight)) {
-            sb.append("<div class=\"banner-logos\">");
-            if (StringUtils.hasText(logoLeft)) {
-                sb.append("<img src=\"").append(logoLeft).append("\" class=\"banner-logo\" alt=\"\" />");
-            } else {
-                sb.append("<div></div>");
-            }
-            if (StringUtils.hasText(logoRight)) {
-                sb.append("<img src=\"").append(logoRight).append("\" class=\"banner-logo\" alt=\"\" />");
-            } else {
-                sb.append("<div></div>");
-            }
-            sb.append("</div>");
-        }
+        sb.append(bannerLogosHtml(reportData));
         sb.append("<div class=\"page-banner__title\">").append(escapeHtml(report.getTitle())).append("</div>");
         sb.append("<div class=\"page-banner__subtitle\">").append(escapeHtml(report.getSubtitle())).append("</div>");
         sb.append("<div class=\"cover-meta-row\">");
@@ -2408,37 +2433,12 @@ public class SavedReportService {
         sb.append(kpiCardColored(firstNonBlank(stringValue(executiveSummary.get("overallCompletionPct")), "0%"), "Overall Completion", "Current Closeout", "kpi-card--green"));
         sb.append("</div>");
 
-        // Key Insights — 4+ structured lines
+        // Key Insights — pulled from buildSectionInsights("summary")
         sb.append("<div class=\"section-heading\">KEY INSIGHTS</div>");
         sb.append("<div class=\"insight-box\"><ul>");
-        if (StringUtils.hasText(narrative)) {
-            for (String line : narrative.split("[\r\n]+")) {
-                if (StringUtils.hasText(line.trim())) {
-                    sb.append("<li>").append(escapeHtml(line.trim())).append("</li>");
-                }
-            }
-        } else {
-            String pctStr = formatPercent(overallCompletion);
-            String forecastStr = firstNonBlank(stringValue(executiveSummary.get("forecastCompletion")), "TBD");
-            String windowStr = report.getDateFrom() + " \u2013 " + report.getDateTo();
-            // Line 1: checklist completion
-            sb.append("<li><strong>").append(escapeHtml(pctStr)).append(" checklist completion</strong> \u2014 ")
-              .append(checklistClosed).append(" of ").append(checklistTotal)
-              .append(" checklists signed off across all tag categories.</li>");
-            // Line 2: reporting window activity
-            sb.append("<li><strong>Reporting window ").append(escapeHtml(windowStr)).append("</strong> \u2014 ")
-              .append(escapeHtml(stringValue(tagVelocity.get("closedInWindow")))).append(" checklists closed in this period at a pace of ")
-              .append(escapeHtml(stringValue(tagVelocity.get("avgPerWeek")))).append(" tags/week (")
-              .append(escapeHtml(stringValue(tagVelocity.get("avgPerDay")))).append("/day).</li>");
-            // Line 3: issues
-            sb.append("<li><strong>").append(issueOpen == 0 ? "0 open issues" : issueOpen + " open issue" + (issueOpen == 1 ? "" : "s")).append("</strong> \u2014 ")
-              .append(issueOpen == 0 ? "all " + issueClosed + " logged issues fully resolved" : issueClosed + " resolved, " + issueOpen + " remain open")
-              .append(StringUtils.hasText(avgIssueClosure) ? " (avg closure time: " + avgIssueClosure + " days)." : ".").append("</li>");
-            // Line 4: forecast
-            sb.append("<li><strong>Forecast completion: ").append(escapeHtml(forecastStr)).append("</strong> \u2014 ")
-              .append("based on current delivery pace. Actual date may advance as additional checklists are uploaded and closed.</li>");
-            // Line 5: note
-            sb.append("<li><em>Note: forecast may shift as remaining checklists are uploaded and tag category data is completed.</em></li>");
+        List<String> insightLines = buildSectionInsights("summary", reportData, summary, executive);
+        for (String line : insightLines) {
+            sb.append("<li>").append(escapeHtml(line)).append("</li>");
         }
         sb.append("</ul></div>");
 
@@ -2460,7 +2460,8 @@ public class SavedReportService {
                                             SavedReport report,
                                             Map<String, Object> project) {
         Map<String, Object> sectionEntry = asMap(asMap(reportData.get("sectionData")).get("checklists"));
-        List<Map<String, Object>> weekRows = asListOfMaps(sectionEntry.get("weekOverWeek"));
+        List<Map<String, Object>> dailyClosuresInRange = asListOfMaps(sectionEntry.get("dailyClosuresInRange"));
+        double overallAvgPerDay = doubleValue(sectionEntry.get("overallAvgPerDay"));
         List<Map<String, Object>> categoryStatusRows = asListOfMaps(sectionEntry.get("categoryStatusRows"));
         List<Map<String, Object>> cxaRows = asListOfMaps(sectionEntry.get("cxaRows"));
         List<String> insights = buildSectionInsights("checklists", reportData, summary, executive);
@@ -2478,6 +2479,7 @@ public class SavedReportService {
 
         // Banner
         sb.append("<div class=\"page-banner\">");
+        sb.append(bannerLogosHtml(reportData));
         sb.append("<div class=\"page-banner__title\">CHECKLISTS</div>");
         sb.append("<div class=\"page-banner__subtitle\">Checklist analysis \u00b7 ").append(escapeHtml(projectName))
           .append(" \u00b7 ").append(escapeHtml(report.getDateFrom())).append(" \u2013 ").append(escapeHtml(report.getDateTo())).append("</div>");
@@ -2495,12 +2497,13 @@ public class SavedReportService {
         sb.append(kpiCardColored(String.valueOf(checklistCxaToVerify), "Ready for CXA Review", "Awaiting CX sign-off", "kpi-card--cxa"));
         sb.append("</div>");
 
-        // Section 2: Week-over-week chart (actuals only, weeks ending Friday)
+        // Section 2: Daily closures within the report date range
         if (includeChart) {
-            sb.append("<div class=\"section-heading\">WEEK-OVER-WEEK CHECKLIST CLOSURE</div>");
+            sb.append("<div class=\"section-heading\">WEEKLY CHECKLIST PROGRESS</div>");
             sb.append("<div style=\"border:1px solid #dde4ef;padding:10px 12px;margin-top:6px;\">");
-            sb.append(buildWoWSvgHtml(weekRows));
+            sb.append(buildDailyProgressSvgFromRows(dailyClosuresInRange, true, overallAvgPerDay));
             sb.append("</div>");
+            sb.append("<div style=\"font-size:7pt;color:#64748b;margin-top:4px;font-style:italic;\">Each bar = closures on that date within the report window. Dashed gold line = overall project average tags/day.</div>");
         }
 
         // Section 3: Checklists by category status
@@ -2553,24 +2556,6 @@ public class SavedReportService {
             sb.append("</ul></div>");
         }
 
-        // Ready for CXA Review — checklist detail list
-        if (!cxaRows.isEmpty()) {
-            sb.append("<div class=\"section-heading\">READY FOR CXA REVIEW \u2014 CHECKLIST DETAIL</div>");
-            sb.append("<table><thead><tr>");
-            sb.append("<th>Checklist</th><th>Category</th><th>Assigned To</th><th>Due Date</th><th>Days Open</th>");
-            sb.append("</tr></thead><tbody>");
-            for (Map<String, Object> r : cxaRows) {
-                sb.append("<tr>")
-                  .append("<td>").append(escapeHtml(stringValue(r.get("name")))).append("</td>")
-                  .append("<td>").append(escapeHtml(stringValue(r.get("category")))).append("</td>")
-                  .append("<td>").append(escapeHtml(stringValue(r.get("assignedTo")))).append("</td>")
-                  .append("<td>").append(escapeHtml(stringValue(r.get("dueDate")))).append("</td>")
-                  .append("<td>").append(escapeHtml(String.valueOf(r.get("openDays")))).append("</td>")
-                  .append("</tr>");
-            }
-            sb.append("</tbody></table>");
-        }
-
         sb.append("</div>"); // page-content
         sb.append(buildPageFooterHtml(report, executive, "CHECKLISTS"));
         return sb.toString();
@@ -2595,6 +2580,7 @@ public class SavedReportService {
 
         // Banner
         sb.append("<div class=\"page-banner\">");
+        sb.append(bannerLogosHtml(reportData));
         sb.append("<div class=\"page-banner__title\">ISSUES</div>");
         sb.append("<div class=\"page-banner__subtitle\">Issues analysis \u00b7 ").append(escapeHtml(projectName))
           .append(" \u00b7 Snapshot: ").append(escapeHtml(report.getDateFrom())).append(" \u2013 ").append(escapeHtml(report.getDateTo())).append("</div>");
@@ -2698,60 +2684,194 @@ public class SavedReportService {
                                             SavedReport report,
                                             Map<String, Object> project) {
         Map<String, Object> sectionEntry = asMap(asMap(reportData.get("sectionData")).get("equipment"));
-        List<Map<String, Object>> disciplineMatrix = asListOfMaps(sectionEntry != null ? sectionEntry.get("disciplineMatrix") : null);
+        List<Map<String, Object>> dailyRows = asListOfMaps(sectionEntry != null ? sectionEntry.get("dailyClosures") : null);
         String projectName = firstNonBlank((String) project.get("projectName"), report.getProjectName(), report.getProjectId());
         long equipTotal = longValue(asMap(summary.get("equipment")).get("total"));
-        long elec = disciplineMatrix.stream().filter(r -> "Electrical".equals(stringValue(r.get("discipline"))) && !Boolean.TRUE.equals(r.get("isHeader"))).count();
-        long mech = disciplineMatrix.stream().filter(r -> "Mechanical".equals(stringValue(r.get("discipline"))) && !Boolean.TRUE.equals(r.get("isHeader"))).count();
-        long other = disciplineMatrix.stream().filter(r -> "Other".equals(stringValue(r.get("discipline"))) && !Boolean.TRUE.equals(r.get("isHeader"))).count();
+        long clTotal    = longValue(asMap(summary.get("checklists")).get("total"));
+        long clClosed   = longValue(asMap(summary.get("checklists")).get("closed"));
+        long clOpen     = longValue(asMap(summary.get("checklists")).get("open"));
 
         StringBuilder sb = new StringBuilder();
         sb.append("<div class=\"page-banner\">");
-        sb.append("<div class=\"page-banner__title\">EQUIPMENT</div>");
-        sb.append("<div class=\"page-banner__subtitle\">Equipment overview \u00b7 ").append(escapeHtml(projectName))
+        sb.append(bannerLogosHtml(reportData));
+        sb.append("<div class=\"page-banner__title\">EQUIPMENT &amp; DELIVERY PROGRESS</div>");
+        sb.append("<div class=\"page-banner__subtitle\">Daily checklist closure progress \u00b7 ").append(escapeHtml(projectName))
           .append(" \u00b7 ").append(escapeHtml(report.getDateFrom())).append(" \u2013 ").append(escapeHtml(report.getDateTo())).append("</div>");
         sb.append("</div>");
         sb.append("<div class=\"page-content\">");
 
-        sb.append("<div class=\"section-heading\">EQUIPMENT OVERVIEW</div>");
+        sb.append("<div class=\"section-heading\">OVERVIEW</div>");
         sb.append("<div class=\"kpi-grid kpi-grid--4\">");
         sb.append(kpiCardColored(String.valueOf(equipTotal), "Total Equipment", "In scope", ""));
-        sb.append(kpiCardColored(String.valueOf(elec), "Electrical Types", "discipline", "kpi-card--cxa"));
-        sb.append(kpiCardColored(String.valueOf(mech), "Mechanical Types", "discipline", "kpi-card--green"));
-        sb.append(kpiCardColored(String.valueOf(other), "Other Types", "discipline", "kpi-card--amber"));
+        sb.append(kpiCardColored(String.valueOf(clTotal), "Total Checklists", "Project scope", ""));
+        sb.append(kpiCardColored(String.valueOf(clClosed), "Checklists Closed", formatPercent(percent(clClosed, clTotal)), "kpi-card--green"));
+        sb.append(kpiCardColored(String.valueOf(clOpen), "Checklists Open", formatPercent(percent(clOpen, clTotal)), "kpi-card--amber"));
         sb.append("</div>");
 
-        // Discipline matrix table
-        sb.append("<div class=\"section-heading\">EQUIPMENT BY DISCIPLINE &amp; TYPE \u2014 CHECKLIST COMPLETION</div>");
-        sb.append("<table><thead><tr>");
-        sb.append("<th style=\"width:45%\">Equipment Type</th>");
-        sb.append("<th style=\"background:#fef2f2;color:#8b1a1a;text-align:center;\">Red (L1)</th>");
-        sb.append("<th style=\"background:#fefce8;color:#92400e;text-align:center;\">Yellow (L2)</th>");
-        sb.append("<th style=\"background:#f0fdf4;color:#166534;text-align:center;\">Green (L3)</th>");
-        sb.append("</tr></thead><tbody>");
-        for (Map<String, Object> row : disciplineMatrix) {
-            boolean isHeader = Boolean.TRUE.equals(row.get("isHeader"));
-            if (isHeader) {
-                String disc = stringValue(row.get("discipline"));
-                String headerColor = "Electrical".equals(disc) ? "#0e3d5c" : "Mechanical".equals(disc) ? "#166534" : "#5c4000";
-                sb.append("<tr style=\"background:").append(headerColor)
-                  .append(";color:#fff;font-weight:700;\">")
-                  .append("<td colspan=\"4\" style=\"padding:5px 8px;\">")
-                  .append(escapeHtml(disc)).append("</td></tr>");
-            } else {
-                sb.append("<tr>")
-                  .append("<td style=\"padding-left:16px;\">").append(escapeHtml(stringValue(row.get("equipmentType")))).append("</td>")
-                  .append("<td style=\"text-align:center;color:#8b1a1a;font-weight:600;\">").append(escapeHtml(stringValue(row.get("red")))).append("</td>")
-                  .append("<td style=\"text-align:center;color:#92400e;font-weight:600;\">").append(escapeHtml(stringValue(row.get("yellow")))).append("</td>")
-                  .append("<td style=\"text-align:center;color:#166534;font-weight:600;\">").append(escapeHtml(stringValue(row.get("green")))).append("</td>")
-                  .append("</tr>");
-            }
-        }
-        sb.append("</tbody></table>");
+        // Daily progress chart
+        sb.append("<div class=\"section-heading\">DAILY CHECKLIST CLOSURES \u2014 FULL PROJECT HISTORY</div>");
+        sb.append("<div style=\"border:1px solid #dde4ef;padding:10px 12px;margin-top:6px;\">");
+        sb.append(buildDailyProgressSvgFromRows(dailyRows));
+        sb.append("</div>");
+        sb.append("<div style=\"font-size:7pt;color:#64748b;margin-top:4px;\">Each bar = closures on that date. Dashed gold line = overall average tags/day.</div>");
 
         sb.append("</div>");
         sb.append(buildPageFooterHtml(report, executive, "EQUIPMENT"));
         return sb.toString();
+    }
+
+    private String buildDailyProgressSvgFromRows(List<Map<String, Object>> dailyRows) {
+        return buildDailyProgressSvgFromRows(dailyRows, false, -1);
+    }
+
+    /**
+     * @param labelEveryBar  true = one x-axis label + data label per bar (short windows);
+     *                       false = month-boundary labels only (full history view)
+     * @param externalAvgPerDay  if > 0, draw the avg line at this value (overall project pace);
+     *                           otherwise use the avg of the rows passed in
+     */
+    private String buildDailyProgressSvgFromRows(List<Map<String, Object>> dailyRows,
+                                                  boolean labelEveryBar,
+                                                  double externalAvgPerDay) {
+        if (dailyRows == null || dailyRows.isEmpty()) {
+            return "<div style=\"font-size:7.5pt;color:#94a3b8;padding:10px 0;\">No closure data available.</div>";
+        }
+        int n = dailyRows.size();
+        long[] counts = dailyRows.stream().mapToLong(r -> longValue(r.get("closed"))).toArray();
+        long maxVal = 1;
+        long totalClosed = 0;
+        for (long c : counts) { if (c > maxVal) maxVal = c; totalClosed += c; }
+        double ownAvg = totalClosed / (double) Math.max(1, n);
+        double avgToShow = externalAvgPerDay > 0 ? externalAvgPerDay : ownAvg;
+        // Make sure maxVal is at least as tall as the avg line
+        if (avgToShow > maxVal) maxVal = (long) Math.ceil(avgToShow);
+
+        // Rotate x-axis labels when there are many bars in label-every-bar mode
+        boolean rotate = labelEveryBar && n > 10;
+        int svgW = 560, svgH = 180;
+        int padL = 32, padR = 72, padT = 22, padB = rotate ? 48 : (labelEveryBar ? 38 : 36);
+        int chartW = svgW - padL - padR;
+        int chartH = svgH - padT - padB;
+
+        double gap = (double) chartW / Math.max(n, 1);
+        double barW;
+        if (labelEveryBar) {
+            // Cap bar width so bars don't fill the chart for small n
+            barW = Math.min(34, Math.max(4, gap * 0.60));
+        } else {
+            barW = Math.max(1.5, gap - 0.8);
+        }
+
+        StringBuilder svg = new StringBuilder();
+        svg.append("<svg viewBox=\"0 0 ").append(svgW).append(" ").append(svgH)
+           .append("\" width=\"100%\" xmlns=\"http://www.w3.org/2000/svg\" style=\"display:block;\">");
+
+        // Y gridlines
+        for (int g = 0; g <= 4; g++) {
+            double gy = padT + chartH * g / 4.0;
+            long gv = maxVal - (maxVal * g / 4);
+            svg.append(String.format(Locale.US, "<line x1=\"%d\" y1=\"%.1f\" x2=\"%d\" y2=\"%.1f\" stroke=\"#dde4ef\" stroke-width=\"0.8\"/>", padL, gy, padL + chartW, gy));
+            svg.append(String.format(Locale.US, "<text x=\"%d\" y=\"%.1f\" text-anchor=\"end\" font-size=\"7\" fill=\"#94a3b8\">%d</text>", padL - 3, gy + 3, gv));
+        }
+        // Axes
+        svg.append(String.format(Locale.US, "<line x1=\"%d\" y1=\"%d\" x2=\"%d\" y2=\"%d\" stroke=\"#1a2744\" stroke-width=\"1\"/>", padL, padT, padL, padT + chartH));
+        svg.append(String.format(Locale.US, "<line x1=\"%d\" y1=\"%d\" x2=\"%d\" y2=\"%d\" stroke=\"#1a2744\" stroke-width=\"1\"/>", padL, padT + chartH, padL + chartW, padT + chartH));
+        svg.append(String.format(Locale.US, "<text transform=\"rotate(-90)\" x=\"-%d\" y=\"13\" text-anchor=\"middle\" font-size=\"7.5\" font-weight=\"700\" fill=\"#1a2744\">Tags/Day</text>", padT + chartH / 2));
+
+        // Bars + labels
+        String prevMonth = null;
+        for (int i = 0; i < n; i++) {
+            long cnt = counts[i];
+            double cx = padL + i * gap + gap / 2.0;   // centre of slot
+            double x  = cx - barW / 2.0;               // bar left edge
+
+            // Bar (draw even for 0 so axis stays clean; use min height 1 for 0)
+            double barH = cnt > 0 ? ((double) cnt / maxVal) * chartH : 0;
+            double y    = padT + chartH - Math.max(barH, 0);
+            if (cnt > 0) {
+                svg.append(String.format(Locale.US,
+                    "<rect x=\"%.1f\" y=\"%.1f\" width=\"%.1f\" height=\"%.1f\" fill=\"#1a2744\" rx=\"1\"/>",
+                    x, y, barW, barH));
+            } else {
+                // Zero: tiny tick on x-axis so the bar slot is visible
+                svg.append(String.format(Locale.US,
+                    "<line x1=\"%.1f\" y1=\"%d\" x2=\"%.1f\" y2=\"%d\" stroke=\"#cbd5e1\" stroke-width=\"1\"/>",
+                    cx, padT + chartH, cx, padT + chartH + 3));
+            }
+
+            // Data label above bar (always, including 0)
+            if (labelEveryBar) {
+                double labelY = cnt > 0 ? y - 3 : padT + chartH - 3;
+                svg.append(String.format(Locale.US,
+                    "<text x=\"%.1f\" y=\"%.1f\" text-anchor=\"middle\" font-size=\"8\" font-weight=\"700\" fill=\"#1a2744\" font-family=\"'Segoe UI',Arial,sans-serif\">%d</text>",
+                    cx, labelY, cnt));
+            } else if (cnt > 0) {
+                svg.append(String.format(Locale.US,
+                    "<text x=\"%.1f\" y=\"%.1f\" text-anchor=\"middle\" font-size=\"9\" font-weight=\"800\" fill=\"#1a2744\" font-family=\"'Segoe UI',Arial,sans-serif\">%d</text>",
+                    cx, y - 4, cnt));
+            }
+
+            // X-axis label
+            String dateStr = stringValue(dailyRows.get(i).get("date"));
+            if (labelEveryBar) {
+                // Label on every bar
+                try {
+                    LocalDate ld = LocalDate.parse(dateStr);
+                    String lbl = ld.format(DateTimeFormatter.ofPattern("d MMM"));
+                    if (rotate) {
+                        // Rotate -45° anchored at bottom of bar
+                        svg.append(String.format(Locale.US,
+                            "<text transform=\"rotate(-45,%.1f,%d)\" x=\"%.1f\" y=\"%d\" text-anchor=\"end\" font-size=\"7\" fill=\"#64748b\" font-family=\"'Segoe UI',Arial,sans-serif\">%s</text>",
+                            cx, padT + chartH + 10, cx, padT + chartH + 10, escapeHtml(lbl)));
+                    } else {
+                        svg.append(String.format(Locale.US,
+                            "<text x=\"%.1f\" y=\"%d\" text-anchor=\"middle\" font-size=\"8\" fill=\"#64748b\" font-family=\"'Segoe UI',Arial,sans-serif\">%s</text>",
+                            cx, padT + chartH + 14, escapeHtml(lbl)));
+                    }
+                } catch (Exception ignored) {}
+            } else {
+                // Month-boundary labels only (full-history mode)
+                if (dateStr != null && dateStr.length() >= 7) {
+                    String monthKey = dateStr.substring(0, 7);
+                    if (!monthKey.equals(prevMonth)) {
+                        String lbl = "";
+                        try {
+                            LocalDate ld = LocalDate.parse(dateStr);
+                            lbl = ld.format(DateTimeFormatter.ofPattern("MMM d"));
+                        } catch (Exception ignored) {}
+                        svg.append(String.format(Locale.US,
+                            "<text x=\"%.1f\" y=\"%d\" text-anchor=\"middle\" font-size=\"6.5\" fill=\"#64748b\">%s</text>",
+                            cx, padT + chartH + 11, escapeHtml(lbl)));
+                        prevMonth = monthKey;
+                    }
+                }
+            }
+        }
+
+        // Last date label (full-history mode only)
+        if (!labelEveryBar) {
+            String lastDateStr = stringValue(dailyRows.get(n - 1).get("date"));
+            try {
+                LocalDate ld = LocalDate.parse(lastDateStr);
+                double lx = padL + (n - 1) * gap + gap / 2.0;
+                svg.append(String.format(Locale.US,
+                    "<text x=\"%.1f\" y=\"%d\" text-anchor=\"middle\" font-size=\"6.5\" fill=\"#64748b\">%s</text>",
+                    lx, padT + chartH + 22, escapeHtml(ld.format(DateTimeFormatter.ofPattern("d MMM")))));
+            } catch (Exception ignored) {}
+        }
+
+        // Average dashed line
+        double clampedAvg = Math.min(avgToShow, maxVal);
+        double avgY = padT + chartH - (clampedAvg / maxVal) * chartH;
+        svg.append(String.format(Locale.US,
+            "<line x1=\"%d\" y1=\"%.1f\" x2=\"%d\" y2=\"%.1f\" stroke=\"#c9a227\" stroke-width=\"1.5\" stroke-dasharray=\"5,3\"/>",
+            padL, avgY, padL + chartW, avgY));
+        svg.append(String.format(Locale.US,
+            "<text x=\"%d\" y=\"%.1f\" font-size=\"7\" fill=\"#c9a227\" font-weight=\"700\" font-family=\"'Segoe UI',Arial,sans-serif\">avg %.1f/day</text>",
+            padL + chartW + 4, avgY + 3, avgToShow));
+
+        svg.append("</svg>");
+        return svg.toString();
     }
 
     private String renderForecastAppendixHtml(Map<String, Object> reportData,
@@ -2771,13 +2891,16 @@ public class SavedReportService {
         long daysToCompletion = dailyRate.equals("N/A") ? 0 : (long) Math.ceil(remaining / Math.max(0.001, Double.parseDouble(dailyRate.replace(",", "."))));
 
         StringBuilder sb = new StringBuilder();
-        sb.append("<div class=\"page-content\" style=\"padding-top:32px;\">");
 
-        // Title block
-        sb.append("<div style=\"font-size:22pt;font-weight:800;color:#0f172a;font-family:'Segoe UI',Arial,sans-serif;margin-bottom:4px;\">Project Completion Forecast</div>");
-        sb.append("<div style=\"font-size:9pt;color:#c9a227;font-weight:600;margin-bottom:10px;\">")
-          .append(escapeHtml(projectName)).append(" \u00b7 As at ").append(escapeHtml(today)).append("</div>");
-        sb.append("<div style=\"border-top:2px solid #c9a227;margin-bottom:16px;\"></div>");
+        // Banner
+        sb.append("<div class=\"page-banner\">");
+        sb.append(bannerLogosHtml(reportData));
+        sb.append("<div class=\"page-banner__title\">PROJECT COMPLETION FORECAST</div>");
+        sb.append("<div class=\"page-banner__subtitle\">Completion trajectory \u00b7 ").append(escapeHtml(projectName))
+          .append(" \u00b7 As at ").append(escapeHtml(today)).append("</div>");
+        sb.append("</div>");
+
+        sb.append("<div class=\"page-content\">");
 
         // 4 KPI cards
         sb.append("<div class=\"kpi-grid kpi-grid--4\" style=\"margin-bottom:18px;\">");
@@ -2937,10 +3060,142 @@ public class SavedReportService {
         return svg.toString();
     }
 
+    /** Build a daily-closures SVG bar chart covering the full project history.
+     *  Each bar = one calendar date with at least 1 closure.
+     *  A dashed avg line spans the full width at height = total / calendarDays. */
+    private String buildDailyProgressSvg(List<Checklist> checklists) {
+        // Count closures per date
+        Map<LocalDate, Long> byDate = checklists.stream()
+                .filter(this::isClosedChecklist)
+                .map(this::checklistFinishedDate)
+                .filter(Objects::nonNull)
+                .collect(Collectors.groupingBy(d -> d, Collectors.counting()));
+
+        if (byDate.isEmpty()) {
+            return "<div style=\"font-size:7.5pt;color:#94a3b8;padding:10px 0;\">No closure data available.</div>";
+        }
+
+        LocalDate first = byDate.keySet().stream().min(LocalDate::compareTo).orElseThrow();
+        LocalDate last  = byDate.keySet().stream().max(LocalDate::compareTo).orElseThrow();
+        long calendarDays = Math.max(1, java.time.temporal.ChronoUnit.DAYS.between(first, last) + 1);
+
+        // Build ordered list of (date, count) for every day in range
+        List<long[]> days = new java.util.ArrayList<>();  // [epochDay, count]
+        for (LocalDate d = first; !d.isAfter(last); d = d.plusDays(1)) {
+            days.add(new long[]{d.toEpochDay(), byDate.getOrDefault(d, 0L)});
+        }
+
+        double avgPerDay = checklists.stream().filter(this::isClosedChecklist).count() / (double) calendarDays;
+
+        int svgW = 560, svgH = 180;
+        int padL = 32, padR = 10, padT = 18, padB = 36;
+        int chartW = svgW - padL - padR;
+        int chartH = svgH - padT - padB;
+        int n = days.size();
+        long maxVal = days.stream().mapToLong(a -> a[1]).max().orElse(1);
+        if (maxVal == 0) maxVal = 1;
+
+        double barW = Math.max(1.5, (double) chartW / n - 1.0);
+        double gap  = (double) chartW / n;
+
+        StringBuilder svg = new StringBuilder();
+        svg.append("<svg viewBox=\"0 0 ").append(svgW).append(" ").append(svgH)
+           .append("\" width=\"100%\" xmlns=\"http://www.w3.org/2000/svg\" style=\"display:block;\">");
+
+        // Y gridlines
+        int gridLines = 4;
+        for (int g = 0; g <= gridLines; g++) {
+            double gy = padT + chartH * g / (double) gridLines;
+            long gv = maxVal - (maxVal * g / gridLines);
+            svg.append(String.format(Locale.US,
+                "<line x1=\"%d\" y1=\"%.1f\" x2=\"%d\" y2=\"%.1f\" stroke=\"#dde4ef\" stroke-width=\"0.8\"/>",
+                padL, gy, padL + chartW, gy));
+            svg.append(String.format(Locale.US,
+                "<text x=\"%d\" y=\"%.1f\" text-anchor=\"end\" font-size=\"7\" fill=\"#94a3b8\">%d</text>",
+                padL - 3, gy + 3, gv));
+        }
+        // Axes
+        svg.append(String.format(Locale.US,
+            "<line x1=\"%d\" y1=\"%d\" x2=\"%d\" y2=\"%d\" stroke=\"#1a2744\" stroke-width=\"1\"/>",
+            padL, padT, padL, padT + chartH));
+        svg.append(String.format(Locale.US,
+            "<line x1=\"%d\" y1=\"%d\" x2=\"%d\" y2=\"%d\" stroke=\"#1a2744\" stroke-width=\"1\"/>",
+            padL, padT + chartH, padL + chartW, padT + chartH));
+        // Y-axis label
+        svg.append(String.format(Locale.US,
+            "<text transform=\"rotate(-90)\" x=\"-%d\" y=\"13\" text-anchor=\"middle\" font-size=\"7.5\" font-weight=\"700\" fill=\"#1a2744\">Tags/Day</text>",
+            padT + chartH / 2));
+
+        // Bars
+        for (int i = 0; i < n; i++) {
+            long cnt = days.get(i)[1];
+            if (cnt == 0) continue;
+            double x = padL + i * gap + (gap - barW) / 2.0;
+            double barH = ((double) cnt / maxVal) * chartH;
+            double y = padT + chartH - barH;
+            svg.append(String.format(Locale.US,
+                "<rect x=\"%.1f\" y=\"%.1f\" width=\"%.1f\" height=\"%.1f\" fill=\"#1a2744\" rx=\"1\"/>",
+                x, y, barW, barH));
+        }
+
+        // Average line (dashed gold)
+        double avgY = padT + chartH - (avgPerDay / maxVal) * chartH;
+        svg.append(String.format(Locale.US,
+            "<line x1=\"%d\" y1=\"%.1f\" x2=\"%d\" y2=\"%.1f\" stroke=\"#c9a227\" stroke-width=\"1.5\" stroke-dasharray=\"5,3\"/>",
+            padL, avgY, padL + chartW, avgY));
+        svg.append(String.format(Locale.US,
+            "<text x=\"%d\" y=\"%.1f\" font-size=\"7\" fill=\"#c9a227\" font-weight=\"700\">avg %.1f/day</text>",
+            padL + chartW + 2, avgY + 3, avgPerDay));
+
+        // X axis tick labels — show month/year label at first day of each month
+        LocalDate prev = null;
+        for (int i = 0; i < n; i++) {
+            LocalDate d = LocalDate.ofEpochDay(days.get(i)[0]);
+            if (prev == null || d.getMonthValue() != prev.getMonthValue()) {
+                double lx = padL + i * gap + gap / 2.0;
+                String lbl = d.format(DateTimeFormatter.ofPattern("d MMM"));
+                svg.append(String.format(Locale.US,
+                    "<text x=\"%.1f\" y=\"%d\" text-anchor=\"middle\" font-size=\"6.5\" fill=\"#64748b\">%s</text>",
+                    lx, padT + chartH + 11, escapeHtml(lbl)));
+            }
+            prev = d;
+        }
+        // Always show last date label
+        double lastX = padL + (n - 1) * gap + gap / 2.0;
+        LocalDate lastDate = LocalDate.ofEpochDay(days.get(n - 1)[0]);
+        svg.append(String.format(Locale.US,
+            "<text x=\"%.1f\" y=\"%d\" text-anchor=\"middle\" font-size=\"6.5\" fill=\"#64748b\">%s</text>",
+            lastX, padT + chartH + 11, escapeHtml(lastDate.format(DateTimeFormatter.ofPattern("d MMM")))));
+
+        svg.append("</svg>");
+        return svg.toString();
+    }
+
     // ─── SVG & HTML HELPERS ───────────────────────────────────────────────────
 
     private String kpiCard(String number, String label, String sub) {
         return kpiCardColored(number, label, sub, "");
+    }
+
+    /** Returns the banner-logos row HTML (left + right logos) if either logo is set; empty string otherwise. */
+    private String bannerLogosHtml(Map<String, Object> reportData) {
+        Map<String, Object> manualContent = asMap(reportData.get("manualContent"));
+        String logoLeft  = stringValue(manualContent.get("logoLeft"));
+        String logoRight = stringValue(manualContent.get("logoRight"));
+        if (!StringUtils.hasText(logoLeft) && !StringUtils.hasText(logoRight)) return "";
+        StringBuilder s = new StringBuilder("<div class=\"banner-logos\">");
+        if (StringUtils.hasText(logoLeft)) {
+            s.append("<img src=\"").append(logoLeft).append("\" class=\"banner-logo\" alt=\"\" />");
+        } else {
+            s.append("<div></div>");
+        }
+        if (StringUtils.hasText(logoRight)) {
+            s.append("<img src=\"").append(logoRight).append("\" class=\"banner-logo\" alt=\"\" />");
+        } else {
+            s.append("<div></div>");
+        }
+        s.append("</div>");
+        return s.toString();
     }
 
     private String kpiCardColored(String number, String label, String sub, String extraClass) {
@@ -3344,7 +3599,7 @@ public class SavedReportService {
                                            Map<String, Object> executive,
                                            Color accent) throws IOException {
         Map<String, Object> sectionEntry = asMap(asMap(reportData.get("sectionData")).get("checklists"));
-        List<Map<String, Object>> weekRows = asListOfMaps(sectionEntry.get("weekOverWeek"));
+        List<Map<String, Object>> dailyClosuresInRange = asListOfMaps(sectionEntry.get("dailyClosuresInRange"));
         List<Map<String, Object>> categoryStatusRows = asListOfMaps(sectionEntry.get("categoryStatusRows"));
         List<String> insights = buildSectionInsights("checklists", reportData, summary, executive);
         long checklistTotal = longValue(asMap(summary.get("checklists")).get("total"));
@@ -3353,7 +3608,7 @@ public class SavedReportService {
         long checklistCxaToVerify = longValue(sectionEntry.get("cxaToVerifyCount"));
         long checklistOpen = Math.max(0L, checklistTotal - checklistClosed - checklistInProgress - checklistCxaToVerify);
 
-        writer.sectionBanner("CHECKLISTS", "Checklist closure by category, weekly actuals, and status breakdown");
+        writer.sectionBanner("CHECKLISTS", "Checklist closure by category, daily actuals, and status breakdown");
         writer.headingRule("CHECKLIST OVERVIEW");
         writer.metricGrid(List.of(
                 new PdfMetric("Total Checklists", String.valueOf(checklistTotal), "project scope", accent),
@@ -3364,13 +3619,13 @@ public class SavedReportService {
         ), 5, 50f);
 
         if (booleanValue(settings.get("includeChart"), true)) {
-            writer.headingRule("WEEK-OVER-WEEK CHECKLIST CLOSURE");
+            writer.headingRule("WEEKLY CHECKLIST PROGRESS");
             writer.chartPanels(List.of(
                     new PdfChartBlock(
-                            "Weekly Actuals (weeks ending Friday)",
-                            toCountBarValues(weekRows, "week", "closed"),
-                            new Color(59, 130, 246),
-                            "No weekly checklist completions were recorded.",
+                            "Daily closures within report window",
+                            toCountBarValues(dailyClosuresInRange, "date", "closed"),
+                            new Color(26, 39, 68),
+                            "No checklist closures recorded in the selected date range.",
                             PdfChartStyle.VERTICAL_BAR
                     )
             ));
@@ -3468,38 +3723,32 @@ public class SavedReportService {
                                             Map<String, Object> executive,
                                             Color accent) throws IOException {
         Map<String, Object> sectionEntry = asMap(asMap(reportData.get("sectionData")).get("equipment"));
-        List<Map<String, Object>> disciplineMatrix = asListOfMaps(sectionEntry != null ? sectionEntry.get("disciplineMatrix") : null);
         long equipTotal = longValue(asMap(summary.get("equipment")).get("total"));
-        long elec = disciplineMatrix.stream().filter(r -> "Electrical".equals(stringValue(r.get("discipline"))) && !Boolean.TRUE.equals(r.get("isHeader"))).count();
-        long mech = disciplineMatrix.stream().filter(r -> "Mechanical".equals(stringValue(r.get("discipline"))) && !Boolean.TRUE.equals(r.get("isHeader"))).count();
-        long other = disciplineMatrix.stream().filter(r -> "Other".equals(stringValue(r.get("discipline"))) && !Boolean.TRUE.equals(r.get("isHeader"))).count();
+        long clTotal    = longValue(asMap(summary.get("checklists")).get("total"));
+        long clClosed   = longValue(asMap(summary.get("checklists")).get("closed"));
+        long clOpen     = longValue(asMap(summary.get("checklists")).get("open"));
+        List<Map<String, Object>> dailyRows = asListOfMaps(sectionEntry != null ? sectionEntry.get("dailyClosures") : null);
 
-        writer.sectionBanner("EQUIPMENT", "Equipment inventory breakdown by discipline and type");
-        writer.headingRule("EQUIPMENT OVERVIEW");
+        writer.sectionBanner("EQUIPMENT & DELIVERY PROGRESS", "Daily checklist closure progress");
+        writer.headingRule("OVERVIEW");
         writer.metricGrid(List.of(
                 new PdfMetric("Total Equipment", String.valueOf(equipTotal), "in scope", accent),
-                new PdfMetric("Electrical Types", String.valueOf(elec), "discipline", new Color(14, 61, 92)),
-                new PdfMetric("Mechanical Types", String.valueOf(mech), "discipline", new Color(22, 163, 74)),
-                new PdfMetric("Other Types", String.valueOf(other), "discipline", new Color(180, 83, 9))
+                new PdfMetric("Total Checklists", String.valueOf(clTotal), "project scope", accent),
+                new PdfMetric("Closed", String.valueOf(clClosed), formatPercent(percent(clClosed, Math.max(1, clTotal))), new Color(22, 163, 74)),
+                new PdfMetric("Open", String.valueOf(clOpen), formatPercent(percent(clOpen, Math.max(1, clTotal))), new Color(180, 83, 9))
         ), 4, 56f);
 
-        writer.headingRule("EQUIPMENT BY DISCIPLINE & TYPE — CHECKLIST COMPLETION");
-        // Flatten matrix — skip header rows (represent as bold rows in PDF via discipline grouping)
-        List<Map<String, Object>> typeRows = disciplineMatrix.stream()
-                .filter(r -> !Boolean.TRUE.equals(r.get("isHeader")))
-                .map(r -> row(
-                        "type", stringValue(r.get("discipline")) + " › " + stringValue(r.get("equipmentType")),
-                        "red", r.get("red"),
-                        "yellow", r.get("yellow"),
-                        "green", r.get("green")
-                ))
+        writer.headingRule("DAILY CHECKLIST CLOSURES — FULL PROJECT HISTORY");
+        // Render daily table showing date and count for days with closures
+        List<Map<String, Object>> nonZeroRows = dailyRows.stream()
+                .filter(r -> longValue(r.get("closed")) > 0)
                 .toList();
         writer.table(
-                typeRows,
-                List.of("type", "red", "yellow", "green"),
-                Map.of("type", "Equipment Type", "red", "Red (L1)", "yellow", "Yellow (L2)", "green", "Green (L3)"),
-                new float[]{0.46f, 0.18f, 0.18f, 0.18f},
-                Math.max(6, typeRows.size())
+                nonZeroRows,
+                List.of("date", "closed"),
+                Map.of("date", "Date", "closed", "Closures"),
+                new float[]{0.60f, 0.40f},
+                Math.max(6, nonZeroRows.size())
         );
     }
 
@@ -3710,16 +3959,89 @@ public class SavedReportService {
         return switch (normalize(sectionId)) {
             case "summary" -> {
                 Map<String, Object> executiveSummary = asMap(executive.get("executiveSummary"));
-                Map<String, Object> periodInsights = asMap(executive.get("periodInsights"));
-                Map<String, Object> tagVelocity = asMap(executive.get("tagVelocity"));
-                yield Stream.of(
-                                "Overall checklist completion is " + stringValue(executiveSummary.get("overallCompletionPct")) + " with " + metricValue(summary, "checklists", "closed") + " closed items in the project snapshot.",
-                                stringValue(periodInsights.get("issuesClosed")) + " issues were closed during the selected reporting window.",
-                                "Forecast completion is currently " + stringValue(executiveSummary.get("forecastCompletion")) + ".",
-                                "Average delivery pace is " + stringValue(tagVelocity.get("avgPerWeek")) + " tags per week and " + stringValue(tagVelocity.get("avgPerDay")) + " tags per day."
-                        )
-                        .filter(StringUtils::hasText)
-                        .toList();
+                Map<String, Object> periodInsights   = asMap(executive.get("periodInsights"));
+                Map<String, Object> tagVelocity      = asMap(executive.get("tagVelocity"));
+                Map<String, Object> equipMatrix      = asMap(executive.get("equipmentMatrix"));
+                Map<String, Object> issueSectionData = asMap(asMap(reportData.get("sectionData")).get("issues"));
+                Map<String, Object> clSectionData    = asMap(asMap(reportData.get("sectionData")).get("checklists"));
+
+                long clTotal    = longValue(asMap(summary.get("checklists")).get("total"));
+                long clClosed   = longValue(asMap(summary.get("checklists")).get("closed"));
+                long clOpen     = longValue(asMap(summary.get("checklists")).get("open"));
+                long clCxa      = longValue(clSectionData.get("cxaToVerifyCount"));
+                long clInProg   = longValue(clSectionData.get("inProgressCount"));
+                String pct      = stringValue(executiveSummary.get("overallCompletionPct"));
+                String forecast = stringValue(executiveSummary.get("forecastCompletion"));
+                String perDay   = stringValue(tagVelocity.get("avgPerDay"));
+                String perWeek  = stringValue(tagVelocity.get("avgPerWeek"));
+                long closedInW  = longValue(tagVelocity.get("closedInWindow"));
+                long issuOpen   = longValue(asMap(summary.get("issues")).get("open"));
+                long issuTotal  = longValue(asMap(summary.get("issues")).get("total"));
+                long issuCxa    = longValue(issueSectionData.get("issueCxaCount"));
+                long issuClosed = longValue(asMap(summary.get("issues")).get("closed"));
+
+                // Discipline breakdown from equipment matrix rows
+                List<Map<String, Object>> matrixRows = asListOfMaps(equipMatrix.get("rows"));
+                long elecTypes = matrixRows.stream().filter(r -> "Electrical".equalsIgnoreCase(stringValue(r.get("discipline")))).count();
+                long mechTypes = matrixRows.stream().filter(r -> "Mechanical".equalsIgnoreCase(stringValue(r.get("discipline")))).count();
+
+                // Category status rows for Red/Yellow tag highlights
+                List<Map<String, Object>> catRows = asListOfMaps(clSectionData.get("categoryStatusRows"));
+                Map<String, Object> redRow    = catRows.stream().filter(r -> "red".equals(stringValue(r.get("tag")))).findFirst().orElse(null);
+                Map<String, Object> yellowRow = catRows.stream().filter(r -> "yellow".equals(stringValue(r.get("tag")))).findFirst().orElse(null);
+                Map<String, Object> greenRow  = catRows.stream().filter(r -> "green".equals(stringValue(r.get("tag")))).findFirst().orElse(null);
+
+                List<String> bullets = new java.util.ArrayList<>();
+
+                // 1. Overall checklist progress
+                bullets.add("Checklist progress: " + clClosed + " of " + clTotal + " checklists closed (" + pct + " complete). "
+                        + clOpen + " remain open and " + clInProg + " are currently in progress.");
+
+                // 2. Red tag (L1/L2A) breakdown
+                if (redRow != null && longValue(redRow.get("total")) > 0) {
+                    long rTotal = longValue(redRow.get("total")), rClosed = longValue(redRow.get("closed"));
+                    bullets.add("Red Tag (L1/L2A): " + rClosed + " of " + rTotal + " closed (" + formatPercent(percent(rClosed, rTotal)) + "). "
+                            + longValue(redRow.get("open")) + " open" + (longValue(redRow.get("cxaToVerify")) > 0 ? ", " + longValue(redRow.get("cxaToVerify")) + " ready for CXA review." : "."));
+                }
+
+                // 3. Yellow tag (L2/L2B) breakdown
+                if (yellowRow != null && longValue(yellowRow.get("total")) > 0) {
+                    long yTotal = longValue(yellowRow.get("total")), yClosed = longValue(yellowRow.get("closed"));
+                    bullets.add("Yellow Tag (L2/L2B): " + yClosed + " of " + yTotal + " closed (" + formatPercent(percent(yClosed, yTotal)) + "). "
+                            + longValue(yellowRow.get("open")) + " open" + (longValue(yellowRow.get("cxaToVerify")) > 0 ? ", " + longValue(yellowRow.get("cxaToVerify")) + " ready for CXA review." : "."));
+                } else if (greenRow != null && longValue(greenRow.get("total")) > 0) {
+                    long gTotal = longValue(greenRow.get("total")), gClosed = longValue(greenRow.get("closed"));
+                    bullets.add("Green Tag (L3): " + gClosed + " of " + gTotal + " closed (" + formatPercent(percent(gClosed, gTotal)) + "). "
+                            + longValue(greenRow.get("open")) + " open.");
+                }
+
+                // 4. Issues summary
+                String issueStatus = issuOpen == 0 ? "all " + issuTotal + " issues are resolved."
+                        : issuOpen + " issue" + (issuOpen > 1 ? "s remain" : " remains") + " open out of " + issuTotal + " total (" + issuClosed + " closed).";
+                String cxaClause = issuCxa > 0 ? " " + issuCxa + " issue" + (issuCxa > 1 ? "s are" : " is") + " awaiting CXA verification." : "";
+                bullets.add("Issues: " + issueStatus + cxaClause);
+
+                // 5. CXA to verify checklists
+                if (clCxa > 0) {
+                    bullets.add("Ready for CXA Review: " + clCxa + " checklist" + (clCxa > 1 ? "s are" : " is")
+                            + " awaiting CX sign-off. These should be prioritised for field review this week.");
+                } else {
+                    bullets.add("No checklists are currently awaiting CXA verification.");
+                }
+
+                // 6. Delivery pace — last window + daily average
+                String windowLabel = firstNonBlank(stringValue(asMap(reportData.get("range")).get("label")), "reporting window");
+                bullets.add("Delivery pace: " + closedInW + " checklist" + (closedInW != 1 ? "s" : "") + " closed in the " + windowLabel
+                        + ". Overall average is " + perDay + " closures/day (" + perWeek + "/week)."
+                        + (StringUtils.hasText(forecast) && !"TBD".equals(forecast) ? " At this rate, project completion is forecast for " + forecast + "." : ""));
+
+                // 7. Equipment scope
+                if (elecTypes + mechTypes > 0) {
+                    bullets.add("Equipment scope: " + elecTypes + " Electrical and " + mechTypes + " Mechanical equipment type"
+                            + (elecTypes + mechTypes > 1 ? "s" : "") + " are registered against checklists in this project.");
+                }
+
+                yield bullets;
             }
             case "checklists" -> Stream.of(
                             metricValue(summary, "checklists", "closed") + " checklists are closed and " + metricValue(summary, "checklists", "open") + " remain open.",
@@ -4152,17 +4474,19 @@ public class SavedReportService {
         return percent(closed, planned);
     }
 
-    private double calculateDailyRunRate(List<Checklist> checklists, int trailingDays) {
-        LocalDate end = LocalDate.now();
-        LocalDate start = end.minusDays(Math.max(1, trailingDays - 1L));
-        long closed = checklists.stream()
+    private double calculateDailyRunRate(List<Checklist> checklists) {
+        // Mirror the frontend algorithm: closedCount / calendarDays(firstClose → lastClose)
+        // This matches TrackerPulsePage.jsx calculateDailyRunRate()
+        List<LocalDate> closedDates = checklists.stream()
                 .filter(this::isClosedChecklist)
-                .filter(checklist -> {
-                    LocalDate finished = checklistFinishedDate(checklist);
-                    return finished != null && !finished.isBefore(start) && !finished.isAfter(end);
-                })
-                .count();
-        return closed / (double) Math.max(1, trailingDays);
+                .map(this::checklistFinishedDate)
+                .filter(Objects::nonNull)
+                .toList();
+        if (closedDates.isEmpty()) return 0;
+        LocalDate first = closedDates.stream().min(LocalDate::compareTo).orElseThrow();
+        LocalDate last  = closedDates.stream().max(LocalDate::compareTo).orElseThrow();
+        long calendarDays = Math.max(1, java.time.temporal.ChronoUnit.DAYS.between(first, last));
+        return closedDates.size() / (double) calendarDays;
     }
 
     private LocalDate estimateForecastDate(List<Checklist> checklists, double dailyRunRate) {
@@ -4354,6 +4678,17 @@ public class SavedReportService {
             return Long.parseLong(String.valueOf(value));
         } catch (Exception ignored) {
             return 0;
+        }
+    }
+
+    private double doubleValue(Object value) {
+        if (value instanceof Number number) {
+            return number.doubleValue();
+        }
+        try {
+            return Double.parseDouble(String.valueOf(value));
+        } catch (Exception ignored) {
+            return 0.0;
         }
     }
 

@@ -42,7 +42,7 @@ mvn spring-boot:run
 
 | Username | Password | Roles |
 |----------|----------|-------|
-| `admin` | `admin123` | ADMIN, USER |
+| `ModumUser` | `ModumUser123@` | ADMIN, USER |
 | `viewer` | `viewer123` | USER |
 
 ### Token Lifetimes
@@ -63,8 +63,8 @@ POST /api/auth/login
 Content-Type: application/json
 
 {
-  "username": "admin",
-  "password": "admin123"
+  "username": "ModumUser",
+  "password": "ModumUser123@"
 }
 ```
 
@@ -78,7 +78,7 @@ Content-Type: application/json
     "tokenType": "Bearer",
     "accessTokenExpiresIn": 900,
     "refreshTokenExpiresIn": 604800,
-    "username": "admin"
+    "username": "ModumUser"
   }
 }
 ```
@@ -211,7 +211,7 @@ curl http://localhost:8080/api/sync/stats \
 # 1. Login
 TOKEN=$(curl -s -X POST http://localhost:8080/api/auth/login \
   -H "Content-Type: application/json" \
-  -d '{"username":"admin","password":"admin123"}' | \
+  -d '{"username":"ModumUser","password":"ModumUser123@"}' | \
   python3 -c "import sys,json; print(json.load(sys.stdin)['data']['accessToken'])")
 
 # 2. Sync all data

@@ -5,6 +5,7 @@ import { Search, RefreshCw, X, ExternalLink, CheckCircle2, Clock, AlertCircle, B
 import { Table, StatusBadge, EmptyState, Skeleton, SyncResultCard } from './index'
 import toast from 'react-hot-toast'
 import { isChecklistDone } from '../../utils/checklistStatusUtils'
+import { emitSyncRefresh, useSyncRefreshSignal } from '../../hooks/useSyncRefreshSignal'
 
 const PAGE_SIZE = 20
 
@@ -266,6 +267,7 @@ export default function GenericListPage({
   topContent = null,
 }) {
   const location = useLocation()
+  const refreshSignal = useSyncRefreshSignal(activeProjectId ? [activeProjectId] : [])
   const [items, setItems]               = useState([])
   const [loading, setLoading]           = useState(true)
   const [search, setSearch]             = useState('')
@@ -287,7 +289,7 @@ export default function GenericListPage({
     }
   }, [fetchFn, activeProjectId])
 
-  useEffect(() => { load() }, [load])
+  useEffect(() => { load() }, [load, refreshSignal])
   useEffect(() => { setVisibleCount(PAGE_SIZE) }, [search, activeProjectId, filters])
   useEffect(() => {
     const preset = location.state?.listPreset
@@ -308,7 +310,8 @@ export default function GenericListPage({
       const res = await syncFn(activeProjectId)
       setSyncResult(res.data.data)
       toast.success('Synced!')
-      load()
+      await load()
+      emitSyncRefresh({ projectId: activeProjectId, scope: `${entityType}-sync` })
     } catch {
       toast.error('Sync failed')
     } finally {

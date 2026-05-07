@@ -51,7 +51,7 @@ public class AuthController {
 
     /**
      * POST /api/auth/login
-     * Body: { "username": "admin", "password": "admin123" }
+     * Body: { "username": "ModumUser", "password": "ModumUser123@" }
      * Returns: access token + refresh token
      */
     @PostMapping("/login")

@@ -4,6 +4,7 @@ import { tasksApi, checklistsApi, assetsApi, personsApi, companiesApi, rolesApi,
 import { useProject } from '../context/ProjectContext'
 import { CheckSquare, Tag, Server, Users, Building2, UserCog, Cpu } from 'lucide-react'
 import { StatusBadge } from '../components/ui'
+import { checklistTagDisplayLabel, deriveChecklistTag } from '../utils/checklistTagUtils'
 
 // ─── Tasks ────────────────────────────────────────────────────────────────────
 export function TasksPage() {
@@ -68,7 +69,10 @@ export function ChecklistsPage() {
       searchKeys={['name', 'externalId', 'status', 'checklistType']}
       filterConfigs={[
         { key: 'status', label: 'All Statuses', getValue: item => normalizeChecklistStatus(item.status || ''), formatOptionLabel: formatChecklistStatusLabel },
-        { key: 'tagLevel', label: 'All Tags', getValue: item => item.tagLevel || '' },
+        { key: 'tagLevel', label: 'All Tags', getValue: item => {
+          const tag = deriveChecklistTag(item)
+          return tag && tag !== 'white' ? tag : ''
+        }, formatOptionLabel: checklistTagDisplayLabel },
         { key: 'checklistType', label: 'All Types', getValue: item => item.checklistType || '' },
       ]}
       columns={[

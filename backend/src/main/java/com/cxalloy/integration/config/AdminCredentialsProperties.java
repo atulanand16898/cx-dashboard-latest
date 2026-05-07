@@ -11,8 +11,8 @@ import java.util.Locale;
 @ConfigurationProperties(prefix = "app.admin")
 public class AdminCredentialsProperties {
 
-    private String cxalloyUsername = "admin";
-    private String cxalloyPassword = "admin123";
+    private String cxalloyUsername = "ModumUser";
+    private String cxalloyPassword = "ModumUser123@";
     private String facilitygridUsername = "fg-admin";
     private String facilitygridPassword = "fgadmin123";
     private String primaveraUsername = "p6-admin";

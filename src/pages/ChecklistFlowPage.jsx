@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react'
 import { useProject } from '../context/ProjectContext'
 import { checklistsApi } from '../services/api'
 import { checklistTagDisplayLabel, deriveChecklistTag } from '../utils/checklistTagUtils'
+import { useSyncRefreshSignal } from '../hooks/useSyncRefreshSignal'
 
 const TAG_COLORS = {
   'level-2 yellow': { bg: '#eab308', label: 'Level-2 YELLOW Tag QA/QC/IVC' },
@@ -76,6 +77,7 @@ function computeFlow(checklists) {
 function useMultiProjectData() {
   const { selectedProjects, activeProject } = useProject()
   const targets = selectedProjects.length > 0 ? selectedProjects : (activeProject ? [activeProject] : [])
+  const refreshSignal = useSyncRefreshSignal(targets.map((project) => project.externalId || project.id))
   const [checklists, setChecklists] = useState([])
   const [loading, setLoading] = useState(false)
 
@@ -85,7 +87,7 @@ function useMultiProjectData() {
     Promise.all(targets.map(p => checklistsApi.getAll(p.externalId).then(r => r.data?.data || []).catch(() => [])))
       .then(results => setChecklists(results.flat()))
       .finally(() => setLoading(false))
-  }, [targets.map(p => p.externalId).join(',')])
+  }, [targets.map(p => p.externalId).join(','), refreshSignal])
 
   return { checklists, loading }
 }

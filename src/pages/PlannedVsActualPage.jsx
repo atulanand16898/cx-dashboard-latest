@@ -14,6 +14,7 @@ import { checklistsApi } from '../services/api'
 import { checklistTagDisplayLabel, deriveChecklistTag } from '../utils/checklistTagUtils'
 import { isChecklistDone, checklistActualFinishDate } from '../utils/checklistStatusUtils'
 import toast from 'react-hot-toast'
+import { useSyncRefreshSignal } from '../hooks/useSyncRefreshSignal'
 
 // ─── CxAlloy deep-link ────────────────────────────────────────────────────────
 function cxUrl(projectId, externalId) {
@@ -786,6 +787,7 @@ export default function PlannedVsActualPage() {
   const { selectedProjects, activeProject } = useProject()
   const targets = selectedProjects.length > 0 ? selectedProjects : (activeProject ? [activeProject] : [])
   const primaryProjectId = activeProject?.externalId || targets[0]?.externalId || null
+  const refreshSignal = useSyncRefreshSignal(targets.map((project) => project.externalId || project.id))
 
   const [loading,    setLoading]    = useState(false)
   const [refreshing, setRefreshing] = useState(false)
@@ -847,9 +849,9 @@ export default function PlannedVsActualPage() {
       setLoading(false)
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [targets.map(p => p.externalId).join(',')])
+  }, [targets.map(p => p.externalId).join(','), refreshSignal])
 
-  useEffect(() => { loadData() }, [targets.map(p => p.externalId).join(',')])
+  useEffect(() => { loadData() }, [targets.map(p => p.externalId).join(','), refreshSignal])
 
   useEffect(() => {
     if (!primaryProjectId) {

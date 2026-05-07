@@ -1,11 +1,13 @@
 import React, { createContext, useContext, useState, useCallback, useEffect, useRef } from 'react'
 import { projectsApi, xerProcessingApi } from '../services/api'
 import { useAuth } from './AuthContext'
+import { useSyncRefreshSignal } from '../hooks/useSyncRefreshSignal'
 
 const ProjectContext = createContext(null)
 
 export function ProjectProvider({ children }) {
   const { isAuthenticated, provider } = useAuth()
+  const refreshSignal = useSyncRefreshSignal()
   const [projects, setProjects] = useState([])
   const [activeProject, setActiveProject] = useState(null)
   const [selectedProjects, setSelectedProjects] = useState([])
@@ -76,6 +78,11 @@ export function ProjectProvider({ children }) {
       setLoading(false)
     })
   }, [clearProjects, fetchProjects, isAuthenticated, provider])
+
+  useEffect(() => {
+    if (!isAuthenticated) return
+    fetchProjects().catch(() => {})
+  }, [fetchProjects, isAuthenticated, refreshSignal])
 
   const toggleProject = useCallback((project) => {
     setActiveProject(project)

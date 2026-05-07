@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from 'react'
 import { Link, Navigate, useNavigate, useParams } from 'react-router-dom'
-import { ArrowRight, ChevronLeft, Eye, EyeOff, Lock, ShieldCheck, User } from 'lucide-react'
+import { ArrowRight, ChevronLeft, Eye, EyeOff, Lock, User } from 'lucide-react'
 import toast from 'react-hot-toast'
 import ModumLogo from '../components/branding/ModumLogo'
 import { useAuth } from '../context/AuthContext'
@@ -127,14 +127,6 @@ export default function LoginPage() {
                     </button>
                   </div>
                 </label>
-
-                <div className="modum-provider-form__helper">
-                  <div className="modum-provider-form__helper-title">
-                    <ShieldCheck size={15} />
-                    Source-specific access
-                  </div>
-                  <div>{selectedSource.helper}</div>
-                </div>
 
                 <button type="submit" disabled={loading} className="modum-provider-form__submit">
                   <span>{loading ? 'Signing in...' : `Sign in to ${selectedSource.label}`}</span>

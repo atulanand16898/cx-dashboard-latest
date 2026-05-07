@@ -16,6 +16,7 @@ import React, { useState, useEffect, useMemo, useRef } from 'react'
 import { useProject } from '../context/ProjectContext'
 import { copilotApi, equipmentApi, issuesApi } from '../services/api'
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, LabelList } from 'recharts'
+import { useSyncRefreshSignal } from '../hooks/useSyncRefreshSignal'
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const ALL_STATUSES = ['Issue Opened', 'Correction in Progress', 'GC to Verify', 'CxA to verify', 'Issue Closed', 'Accepted by Owner', 'Recommendation']
@@ -456,6 +457,7 @@ function computeRadar(issues, equipment) {
 function useIssueData() {
   const { selectedProjects, activeProject } = useProject()
   const targets = selectedProjects.length > 0 ? selectedProjects : (activeProject ? [activeProject] : [])
+  const refreshSignal = useSyncRefreshSignal(targets.map((project) => project.externalId || project.id))
   const [issues, setIssues] = useState([])
   const [equipment, setEquipment] = useState([])
   const [loading, setLoading] = useState(false)
@@ -481,7 +483,7 @@ function useIssueData() {
       })
       .catch(e => setError(e.message))
       .finally(() => setLoading(false))
-  }, [targets.map(p => p.externalId).join(',')])
+  }, [targets.map(p => p.externalId).join(','), refreshSignal])
 
   return { issues, equipment, loading, error }
 }
@@ -539,13 +541,10 @@ function StatisticsTab({ radar }) {
           </div>
         </div>
 
-        <IssuesByEquipmentCard data={radar.equipmentIssueBreakdown} />
-      </div>
-
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
-        <AvgTimeToCloseCard data={radar.avgCloseByCompany} />
         <TopEquipmentIssuesCard data={radar.topEquipmentIssues} />
       </div>
+
+      <IssuesByEquipmentCard data={radar.equipmentIssueBreakdown} />
     </div>
   )
 }
@@ -1022,6 +1021,7 @@ Be concise, actionable, and construction/commissioning focused. Keep answers und
 export default function IssueRadarPage() {
   const { issues, equipment, loading, error } = useIssueData()
   const radar = useMemo(() => computeRadar(issues, equipment), [issues, equipment])
+  const cxaToVerifyCount = radar.matrixRows?.find((row) => row.status === 'CxA to verify')?.total || 0
   const [activeTab, setActiveTab] = useState('Statistics')
 
   if (loading) return (
@@ -1048,11 +1048,12 @@ export default function IssueRadarPage() {
       </div>
 
       {radar.totalRows > 0 && (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 14 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 14 }}>
           {[
             { label: 'Total Issues', value: radar.totalRows, sub: 'All synced issues', color: '#60a5fa' },
             { label: 'Closed Issues', value: radar.closedCount, sub: `${radar.totalRows ? Math.round((radar.closedCount / radar.totalRows) * 100) : 0}% of total`, color: '#22c55e' },
             { label: 'Open Issues', value: radar.openCount, sub: `${radar.totalRows ? Math.round((radar.openCount / radar.totalRows) * 100) : 0}% of total`, color: '#f87171' },
+            { label: 'CxA to Verify', value: cxaToVerifyCount, sub: `${radar.totalRows ? Math.round((cxaToVerifyCount / radar.totalRows) * 100) : 0}% of total`, color: '#a855f7' },
             { label: 'Avg Issue Closure Time', value: `${radar.avgClosureTime.toFixed(2)}d`, sub: 'Based on assigned_to closures', color: '#f59e0b' },
           ].map(card => (
             <div key={card.label} style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 12, padding: '16px 18px' }}>

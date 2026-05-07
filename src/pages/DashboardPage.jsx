@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react'
-import { AlertCircle, CheckCircle2, Activity, Target, Zap, TrendingUp } from 'lucide-react'
+import { AlertCircle, CheckCircle2, Activity, Target, TrendingUp } from 'lucide-react'
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts'
 import { useProject } from '../context/ProjectContext'
 import { issuesApi, tasksApi, checklistsApi } from '../services/api'
@@ -7,6 +7,7 @@ import { DonutChart, StatCard, CardSkeleton } from '../components/ui'
 import { CHECKLIST_TAG_COLORS, DASHBOARD_CHECKLIST_TAG_ORDER, checklistTagDisplayLabel, deriveChecklistTag } from '../utils/checklistTagUtils'
 import { isChecklistDone } from '../utils/checklistStatusUtils'
 import toast from 'react-hot-toast'
+import { useSyncRefreshSignal } from '../hooks/useSyncRefreshSignal'
 
 // ─── ISO week label (correct ISO-8601) ───────────────────────────────────────
 function isoWeekLabel(d) {
@@ -138,6 +139,7 @@ function ChartTooltip({ active, payload, label }) {
 // ─── Main ─────────────────────────────────────────────────────────────────────
 export default function DashboardPage() {
   const { activeProject, period } = useProject()
+  const refreshSignal = useSyncRefreshSignal(activeProject?.externalId ? [activeProject.externalId] : [])
   const [loading, setLoading] = useState(true)
   const [stats,   setStats]   = useState(null)
 
@@ -178,7 +180,7 @@ export default function DashboardPage() {
     })
     .catch(() => toast.error('Failed to load dashboard data'))
     .finally(() => setLoading(false))
-  }, [activeProject])
+  }, [activeProject, refreshSignal])
 
   const weeklyData = useMemo(
     () => buildWeeklyData(stats?.issues || [], period),
@@ -353,31 +355,6 @@ export default function DashboardPage() {
         <StatCard label="Open Issues"    value={stats?.openIssues    ?? 0} sub="need attention"  icon={Activity}     color="yellow" />
         <StatCard label="Closed Issues"  value={stats?.closedIssues  ?? 0} sub="resolved"        icon={CheckCircle2} color="green"  />
         <StatCard label="Tasks"          value={stats?.totalTasks    ?? 0} sub="total tasks"     icon={Target}       color="purple" />
-      </div>
-
-      {/* ── Project Health Insight ──────────────────────────────────────────── */}
-      <div style={{ background: 'var(--bg-card)', border: '1px solid rgba(234,179,8,0.22)', borderRadius: 16, padding: '18px 20px', boxShadow: 'var(--shadow-card)' }}>
-        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 14 }}>
-          <div style={{ width: 34, height: 34, borderRadius: 10, background: 'rgba(234,179,8,0.12)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, marginTop: 2 }}>
-            <Zap size={16} color="#eab308" />
-          </div>
-          <div>
-            <div style={{ fontSize: 10, fontWeight: 700, color: '#d97706', textTransform: 'uppercase', letterSpacing: '0.09em', marginBottom: 6 }}>Project Health Insight</div>
-            <p style={{ fontSize: 14, color: 'var(--text-secondary)', lineHeight: 1.6, margin: 0 }}>
-              {completionRate >= 90
-                ? `Outstanding execution — ${completionRate}% checklist completion (${stats?.finishedChecklists} of ${stats?.totalChecklists}). ${stats?.openIssues} open issues remaining.`
-                : completionRate >= 70
-                ? `Good progress at ${completionRate}% checklist completion. Monitor open issues to stay on track.`
-                : `Caution: ${stats?.openIssues} open issues require attention. Checklist completion is at ${completionRate}%.`
-              }
-            </p>
-            <div style={{ marginTop: 10, display: 'flex', gap: 20, fontSize: 12, color: 'var(--text-muted)', flexWrap: 'wrap' }}>
-              <span>Completion: <strong style={{ color: '#22c55e' }}>{completionRate}%</strong></span>
-              <span>Checklists: <strong style={{ color: 'var(--text-primary)' }}>{stats?.finishedChecklists}/{stats?.totalChecklists}</strong></span>
-              <span>Open Issues: <strong style={{ color: '#f59e0b' }}>{stats?.openIssues}</strong></span>
-            </div>
-          </div>
-        </div>
       </div>
 
       {/* ── Issues Opened vs Closed — full-width trend ─────────────────────── */}

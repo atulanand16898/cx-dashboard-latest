@@ -10,7 +10,7 @@ function getWeekLabel() {
 }
 
 export default function ProjectPanel() {
-  const { projects, selectedProjects, toggleProject, clearSelection, activeProject, period, setPeriod } = useProject()
+  const { projects, selectedProjects, toggleProject, clearSelection, activeProject } = useProject()
   const [search, setSearch] = useState('')
   const [open, setOpen] = useState(false)
   const panelRef = useRef(null)
@@ -235,34 +235,6 @@ export default function ProjectPanel() {
             )}
           </div>
 
-          {/* Overall / D / W / M buttons — wired to shared period state */}
-          <div style={{ display: 'flex', gap: 4 }}>
-            {['Overall', 'D', 'W', 'M'].map((l) => {
-              const isActive = period === l
-              return (
-                <button
-                  key={l}
-                  onClick={() => setPeriod(l)}
-                  title={{ Overall: 'All time', D: 'Daily', W: 'Weekly', M: 'Monthly' }[l]}
-                  style={{
-                    width: l === 'Overall' ? 64 : 32, height: 32, borderRadius: 8,
-                    background: isActive ? '#0ea5e9' : 'var(--bg-card-light)',
-                    border: isActive ? 'none' : '1px solid var(--border)',
-                    color: isActive ? 'white' : '#64748b',
-                    fontSize: 12, fontWeight: 700,
-                    cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    fontFamily: 'inherit',
-                    transition: 'all 0.18s ease',
-                    boxShadow: isActive ? '0 2px 10px rgba(14,165,233,0.35)' : 'none',
-                  }}
-                  onMouseEnter={e => { if (!isActive) { e.currentTarget.style.color = 'var(--text-primary)'; e.currentTarget.style.borderColor = 'var(--border-hover)' } }}
-                  onMouseLeave={e => { if (!isActive) { e.currentTarget.style.color = '#64748b'; e.currentTarget.style.borderColor = 'var(--border)' } }}
-                >
-                  {l}
-                </button>
-              )
-            })}
-          </div>
         </div>
       </div>
     </div>

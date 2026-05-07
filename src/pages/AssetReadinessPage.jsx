@@ -1,15 +1,17 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { AlertTriangle, ChevronDown, ChevronRight, Download, ExternalLink, Grid2X2, LayoutGrid, Layers3, Siren, TriangleAlert, Workflow, Wrench } from 'lucide-react'
 import { useProject } from '../context/ProjectContext'
-import { checklistsApi, equipmentApi, issuesApi } from '../services/api'
+import { checklistsApi, equipmentApi } from '../services/api'
 import EquipmentChecklistMatrix from '../components/ui/EquipmentChecklistMatrix'
 import { CHECKLIST_DONE_STATUSES, isChecklistDone } from '../utils/checklistStatusUtils'
 import { deriveChecklistTag } from '../utils/checklistTagUtils'
+import { useSyncRefreshSignal } from '../hooks/useSyncRefreshSignal'
 
 const LEVELS = [
   { key: 'red', label: 'Red', color: '#ef4444', headerBackground: 'rgba(239, 68, 68, 0.18)' },
   { key: 'yellow', label: 'Yellow', color: '#facc15', headerBackground: 'rgba(250, 204, 21, 0.16)' },
   { key: 'green', label: 'Green', color: '#22c55e', headerBackground: 'rgba(34, 197, 94, 0.16)' },
+  { key: 'blue', label: 'Blue', color: '#3b82f6', headerBackground: 'rgba(59, 130, 246, 0.16)' },
 ]
 
 const SUB_TABS = [
@@ -31,13 +33,31 @@ function normalizeDiscipline(value) {
   return 'Other'
 }
 
+function isNonCriticalEquipment(item) {
+  const raw = normalizeText([
+    item?.equipmentType,
+    item?.systemName,
+    item?.discipline,
+    item?.name,
+    item?.tag,
+  ].filter(Boolean).join(' '))
+
+  return raw.includes('non critical') || raw.includes('non-critical')
+}
+
+function resolveTrackerDiscipline(item) {
+  if (isNonCriticalEquipment(item)) return 'Non-Critical'
+  return normalizeDiscipline(item?.discipline || item?.equipmentType || item?.systemName || item?.name)
+}
+
 function getEquipmentLabel(equipment) {
   return equipment.equipmentType || equipment.systemName || equipment.discipline || 'Unclassified'
 }
 
 function getChecklistLevel(checklist) {
   const tag = deriveChecklistTag(checklist)
-  return ['red', 'yellow', 'green'].includes(tag) ? tag : null
+  if (tag === 'non_critical') return 'blue'
+  return ['red', 'yellow', 'green', 'blue'].includes(tag) ? tag : null
 }
 
 function isChecklistClosed(checklist) {
@@ -90,7 +110,7 @@ function computeTracker(equipment, checklists) {
   const grouped = new Map()
 
   equipment.forEach((item) => {
-    const discipline = normalizeDiscipline(item.discipline)
+    const discipline = resolveTrackerDiscipline(item)
     const type = getEquipmentLabel(item)
     const groupKey = `${discipline}::${type}`
 
@@ -111,7 +131,7 @@ function computeTracker(equipment, checklists) {
     if (!level) return
 
     const equipmentItem = matchChecklistToEquipment(checklist, lookup)
-    const discipline = normalizeDiscipline(equipmentItem?.discipline)
+    const discipline = equipmentItem ? resolveTrackerDiscipline(equipmentItem) : 'Other'
     const type = equipmentItem ? getEquipmentLabel(equipmentItem) : 'Unmatched'
     const groupKey = `${discipline}::${type}`
 
@@ -136,13 +156,13 @@ function computeTracker(equipment, checklists) {
       units: item.units.size,
     }))
     .sort((a, b) => {
-      const disciplineOrder = ['Electrical', 'Mechanical', 'Other']
+      const disciplineOrder = ['Electrical', 'Mechanical', 'Non-Critical', 'Other']
       const disciplineDiff = disciplineOrder.indexOf(a.discipline) - disciplineOrder.indexOf(b.discipline)
       if (disciplineDiff !== 0) return disciplineDiff
       return a.type.localeCompare(b.type)
     })
 
-  const sections = ['Electrical', 'Mechanical', 'Other']
+  const sections = ['Electrical', 'Mechanical', 'Non-Critical', 'Other']
     .map((discipline) => {
       const sectionRows = rows.filter((row) => row.discipline === discipline)
       if (!sectionRows.length) return null
@@ -191,6 +211,15 @@ function computeTracker(equipment, checklists) {
     return acc
   }, {})
 
+  const blueRows = rows.filter((row) => row.levels.blue.total > 0)
+  const blue = {
+    units: blueRows.reduce((sum, row) => sum + row.units, 0),
+    types: blueRows.length,
+    total: blueRows.reduce((sum, row) => sum + row.levels.blue.total, 0),
+    closed: blueRows.reduce((sum, row) => sum + row.levels.blue.closed, 0),
+  }
+  blue.completion = getLevelPercent(blue.closed, blue.total)
+
   return {
     sections,
     trackedUnits: equipment.length,
@@ -199,6 +228,7 @@ function computeTracker(equipment, checklists) {
     overallCompletion,
     unmatchedRows: rows.filter((row) => row.type === 'Unmatched').length,
     highLevel,
+    blue,
   }
 }
 
@@ -499,37 +529,6 @@ function buildChecklistUrl(projectId, checklistExternalId) {
 function buildEquipmentUrl(projectId, equipmentExternalId) {
   if (!projectId || !equipmentExternalId) return null
   return `https://tq.cxalloy.com/project/${projectId}/equipment/${equipmentExternalId}`
-}
-
-function buildIssueLookup(issues) {
-  const byAsset = new Map()
-
-  issues.forEach((issue) => {
-    const key = getIssueAssetKey(issue)
-    if (!key) return
-
-    const current = byAsset.get(key) || {
-      label: getIssueAssetLabel(issue),
-      total: 0,
-      open: 0,
-      closed: 0,
-    }
-
-    current.total += 1
-    if (CLOSED_ISSUE_STATUSES.has(normalizeText(issue.status).replace(/\s+/g, '_').replace(/-/g, '_'))) {
-      current.closed += 1
-    } else {
-      current.open += 1
-    }
-
-    if (!current.label || current.label === 'Unassigned Asset') {
-      current.label = getIssueAssetLabel(issue)
-    }
-
-    byAsset.set(key, current)
-  })
-
-  return byAsset
 }
 
 function InsightShell({ icon: Icon, title, subtitle, accent, children }) {
@@ -863,17 +862,15 @@ export default function AssetReadinessPage() {
   const targets = selectedProjects.length > 0 ? selectedProjects : (activeProject ? [activeProject] : [])
   const primaryProjectId = targets[0]?.externalId
   const targetKey = targets.map((project) => project.externalId || project.id).join(',')
+  const refreshSignal = useSyncRefreshSignal(targets.map((project) => project.externalId || project.id))
   const [equipment, setEquipment] = useState([])
   const [checklists, setChecklists] = useState([])
-  const [issues, setIssues] = useState([])
   const [matrix, setMatrix] = useState(null)
   const [loading, setLoading] = useState(false)
   const [matrixLoading, setMatrixLoading] = useState(false)
   const [error, setError] = useState('')
   const [activeTab, setActiveTab] = useState('tracker')
   const [matrixSearch, setMatrixSearch] = useState('')
-  const [expandedChecklistId, setExpandedChecklistId] = useState(null)
-  const [expandedOutlierId, setExpandedOutlierId] = useState(null)
   const [expandedIssueEquipmentId, setExpandedIssueEquipmentId] = useState(null)
 
   useEffect(() => {
@@ -883,7 +880,6 @@ export default function AssetReadinessPage() {
       if (!targets.length) {
         setEquipment([])
         setChecklists([])
-        setIssues([])
         return
       }
 
@@ -891,17 +887,15 @@ export default function AssetReadinessPage() {
       setError('')
 
       try {
-        const [equipmentResults, checklistResults, issueResults] = await Promise.all([
+        const [equipmentResults, checklistResults] = await Promise.all([
           Promise.all(targets.map((project) => equipmentApi.getAll(project.externalId).then((response) => response.data?.data || []))),
           Promise.all(targets.map((project) => checklistsApi.getAll(project.externalId).then((response) => response.data?.data || []))),
-          Promise.all(targets.map((project) => issuesApi.getAll(project.externalId).then((response) => response.data?.data || []))),
         ])
 
         if (cancelled) return
 
         setEquipment(equipmentResults.flat())
         setChecklists(checklistResults.flat())
-        setIssues(issueResults.flat())
       } catch (loadError) {
         if (cancelled) return
         setError(loadError.response?.data?.message || loadError.message || 'Failed to load checklist flow tracker.')
@@ -914,7 +908,7 @@ export default function AssetReadinessPage() {
     return () => {
       cancelled = true
     }
-  }, [targetKey])
+  }, [targetKey, refreshSignal])
 
   useEffect(() => {
     let cancelled = false
@@ -940,89 +934,14 @@ export default function AssetReadinessPage() {
     return () => {
       cancelled = true
     }
-  }, [targetKey])
+  }, [targetKey, refreshSignal])
 
   const tracker = useMemo(() => computeTracker(equipment, checklists), [equipment, checklists])
-  const issueLookup = useMemo(() => buildIssueLookup(issues), [issues])
   const highLevel = tracker?.highLevel || {}
   const electrical = highLevel.Electrical || { units: 0, types: 0, completion: 0 }
   const mechanical = highLevel.Mechanical || { units: 0, types: 0, completion: 0 }
-  const flowInsights = useMemo(() => {
-    const equipmentLookup = buildEquipmentLookup(equipment)
-    const checklistCountsByAsset = new Map()
-
-    checklists.forEach((checklist) => {
-      const matchedEquipment = matchChecklistToEquipment(checklist, equipmentLookup)
-      const key = normalizeText(
-        checklist.assetId
-          || matchedEquipment?.externalId
-          || matchedEquipment?.tag
-          || matchedEquipment?.name
-      )
-      if (!key) return
-      checklistCountsByAsset.set(key, (checklistCountsByAsset.get(key) || 0) + 1)
-    })
-
-    const staleChecklists = checklists
-      .filter(isChecklistInactive)
-      .map((checklist) => {
-        const matchedEquipment = matchChecklistToEquipment(checklist, equipmentLookup)
-        const assetKey = normalizeText(
-          checklist.assetId
-            || matchedEquipment?.externalId
-            || matchedEquipment?.tag
-            || matchedEquipment?.name
-        )
-        const issueStats = assetKey ? issueLookup.get(assetKey) : null
-        return {
-          ...checklist,
-          ageDays: getChecklistAgeDays(checklist),
-          issueCount: issueStats?.total || 0,
-          assetLabel: matchedEquipment?.name || matchedEquipment?.tag || getEquipmentLabel(matchedEquipment || {}) || checklist.assetId || null,
-        }
-      })
-      .sort((a, b) => b.ageDays - a.ageDays)
-      .slice(0, 6)
-
-    const checklistOutliers = checklists
-      .map((checklist) => {
-        const matchedEquipment = matchChecklistToEquipment(checklist, equipmentLookup)
-        const durationDays = isChecklistClosed(checklist)
-          ? getChecklistDurationDays(checklist)
-          : getChecklistAgeDays(checklist)
-        return {
-          externalId: checklist.externalId,
-          label: checklist.name || checklist.externalId || 'Unnamed checklist',
-          value: `${durationDays}d`,
-          durationDays,
-          meta: isChecklistClosed(checklist)
-            ? `Closed ${formatDateLabel(checklist.actualFinishDate || checklist.updatedAt)}`
-            : `Open for ${durationDays} days`,
-          assetLabel: matchedEquipment?.name || matchedEquipment?.tag || checklist.assetId || 'Unlinked',
-        }
-      })
-      .filter((item) => item.durationDays > 0)
-      .sort((a, b) => parseInt(b.value, 10) - parseInt(a.value, 10))
-      .slice(0, 5)
-
-    const topIssueEquipment = Array.from(issueLookup.entries())
-      .map(([assetKey, stats]) => {
-        const equipmentItem = equipmentLookup.byId.get(assetKey) || equipmentLookup.byAlias.get(assetKey)
-        return {
-          externalId: equipmentItem?.externalId || equipmentItem?.tag || null,
-          label: equipmentItem?.name || equipmentItem?.tag || stats.label,
-          value: stats.total,
-          open: stats.open,
-          closed: stats.closed,
-          checklistCount: checklistCountsByAsset.get(assetKey) || 0,
-          type: equipmentItem?.equipmentType || equipmentItem?.discipline || 'Unclassified',
-        }
-      })
-      .sort((a, b) => b.value - a.value)
-      .slice(0, 5)
-
-    return { staleChecklists, checklistOutliers, topIssueEquipment }
-  }, [checklists, equipment, issueLookup])
+  const nonCritical = highLevel['Non-Critical'] || { units: 0, types: 0, completion: 0 }
+  const nonCriticalSection = (tracker?.sections || []).find((section) => section.discipline === 'Non-Critical') || null
 
   const openMatrixForType = (typeName) => {
     setMatrixSearch(typeName)
@@ -1030,25 +949,22 @@ export default function AssetReadinessPage() {
   }
 
   const exportTracker = () => {
+    const headers = ['Discipline', 'Equipment Type', 'Units', ...LEVELS.flatMap((level) => [`${level.label} %`, `${level.label} Closed`])]
     const rows = (tracker?.sections || []).flatMap((section) =>
-      section.rows.map((row) => [
+      section.rows.map((row) => ([
         section.discipline,
         row.type,
         row.units,
-        `${getLevelPercent(row.levels.L1.closed, row.levels.L1.total)}%`,
-        `${row.levels.L1.closed}/${row.levels.L1.total}`,
-        `${getLevelPercent(row.levels.L2.closed, row.levels.L2.total)}%`,
-        `${row.levels.L2.closed}/${row.levels.L2.total}`,
-        `${getLevelPercent(row.levels.L3.closed, row.levels.L3.total)}%`,
-        `${row.levels.L3.closed}/${row.levels.L3.total}`,
-        `${getLevelPercent(row.levels.L4.closed, row.levels.L4.total)}%`,
-        `${row.levels.L4.closed}/${row.levels.L4.total}`,
-      ])
+        ...LEVELS.flatMap((level) => [
+          `${getLevelPercent(row.levels[level.key].closed, row.levels[level.key].total)}%`,
+          `${row.levels[level.key].closed}/${row.levels[level.key].total}`,
+        ]),
+      ]))
     )
 
     downloadCsv(
       `checklists-flow-${primaryProjectId || 'selection'}.csv`,
-      ['Discipline', 'Equipment Type', 'Units', 'L1 %', 'L1 Closed', 'L2 %', 'L2 Closed', 'L3 %', 'L3 Closed', 'L4 %', 'L4 Closed'],
+      headers,
       rows
     )
   }
@@ -1139,10 +1055,11 @@ export default function AssetReadinessPage() {
         </div>
       ) : activeTab === 'tracker' ? (
         <>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 14 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, minmax(0, 1fr))', gap: 14 }}>
             <SummaryCard icon={Wrench} label="Tracked Units" value={tracker?.trackedUnits || 0} subValue={`${tracker?.trackedTypes || 0} equipment types`} tone="#38bdf8" />
             <SummaryCard icon={Layers3} label="Electrical" value={`${electrical.completion}%`} subValue={`${electrical.units} units • ${electrical.types} types`} tone="#22c55e" />
             <SummaryCard icon={Workflow} label="Mechanical" value={`${mechanical.completion}%`} subValue={`${mechanical.units} units • ${mechanical.types} types`} tone="#f59e0b" />
+            <SummaryCard icon={Grid2X2} label="Non-Critical" value={`${nonCritical.completion}%`} subValue={`${nonCritical.units} units • ${nonCritical.types} types`} tone="#94a3b8" />
             <SummaryCard icon={AlertTriangle} label="Overall CX" value={`${tracker?.overallCompletion || 0}%`} subValue={`${tracker?.matchedChecklistTotal || 0} mapped checklists • ${tracker?.unmatchedRows || 0} unmatched groups`} tone="#a78bfa" />
           </div>
 
@@ -1164,12 +1081,10 @@ export default function AssetReadinessPage() {
               <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
                 <MetricPill label="Mapped Checklists" value={tracker?.matchedChecklistTotal || 0} tone="#22c55e" />
                 <MetricPill label="Unmatched Groups" value={tracker?.unmatchedRows || 0} tone="#f59e0b" />
-                <MetricPill label="Stale Items" value={flowInsights.staleChecklists.length} tone="#f59e0b" />
-                <MetricPill label="Heavy-Issue Equipment" value={flowInsights.topIssueEquipment.length} tone="#60a5fa" />
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
                 <div style={{ fontSize: 12, color: '#8ea4c8', fontWeight: 700 }}>
-                  L1 / L2 / L3 / L4 values are based on closed vs total mapped checklists by equipment type.
+                  Red / Yellow / Green / Blue values are based on closed vs total mapped checklists by equipment type.
                 </div>
                 <button
                   onClick={exportTracker}
@@ -1202,6 +1117,12 @@ export default function AssetReadinessPage() {
               ))}
           </div>
 
+          {nonCriticalSection && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+              <SectionTable section={nonCriticalSection} onOpenMatrix={openMatrixForType} />
+            </div>
+          )}
+
           {(tracker?.sections || []).some((section) => section.discipline === 'Other') && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
               {(tracker?.sections || [])
@@ -1227,74 +1148,6 @@ export default function AssetReadinessPage() {
             </div>
           )}
 
-          <div style={{ display: 'grid', gridTemplateColumns: '1.25fr 1fr 1fr', gap: 16, alignItems: 'start' }}>
-            <StaleChecklistPanel
-              items={flowInsights.staleChecklists}
-              expandedId={expandedChecklistId}
-              onToggle={setExpandedChecklistId}
-              projectId={primaryProjectId}
-            />
-            <ExpandableInsightList
-              icon={TriangleAlert}
-              title="Checklist Outliers"
-              subtitle="Longest-running or longest-cycle checklist items in the current selection."
-              accent="#fb7185"
-              items={flowInsights.checklistOutliers}
-              emptyText="No checklist outliers detected from the current records."
-              expandedKey={expandedOutlierId}
-              onToggle={setExpandedOutlierId}
-              getKey={(item, index) => item.externalId || `${item.label}-${index}`}
-              renderCollapsedPills={(item) => (
-                <>
-                  <MetricPill label="Total" value={item.value} tone="#fb7185" />
-                </>
-              )}
-              renderExpandedMeta={(item) => (
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 10 }}>
-                  <div style={detailTileStyle}>
-                    <div style={detailLabelStyle}>Duration</div>
-                    <div style={detailValueStyle}>{item.value}</div>
-                  </div>
-                  <div style={detailTileStyle}>
-                    <div style={detailLabelStyle}>Equipment</div>
-                    <div style={detailValueStyle}>{item.assetLabel}</div>
-                  </div>
-                </div>
-              )}
-              getLink={(item) => buildChecklistUrl(primaryProjectId, item.externalId)}
-            />
-            <ExpandableInsightList
-              icon={Siren}
-              title="Top 5 Equipment With Max Issues"
-              subtitle="Equipment/assets carrying the heaviest linked issue load right now."
-              accent="#60a5fa"
-              items={flowInsights.topIssueEquipment}
-              emptyText="No issue-linked equipment found for the selected project."
-              expandedKey={expandedIssueEquipmentId}
-              onToggle={setExpandedIssueEquipmentId}
-              getKey={(item, index) => item.externalId || `${item.label}-${index}`}
-              renderCollapsedPills={(item) => (
-                <>
-                  <MetricPill label="Total" value={item.value} tone="#60a5fa" />
-                  <MetricPill label="Open" value={item.open} tone="#f87171" />
-                  <MetricPill label="Closed" value={item.closed} tone="#22c55e" />
-                </>
-              )}
-              renderExpandedMeta={(item) => (
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 10 }}>
-                  <div style={detailTileStyle}>
-                    <div style={detailLabelStyle}>Mapped Checklists</div>
-                    <div style={detailValueStyle}>{item.checklistCount}</div>
-                  </div>
-                  <div style={detailTileStyle}>
-                    <div style={detailLabelStyle}>Type</div>
-                    <div style={detailValueStyle}>{item.type}</div>
-                  </div>
-                </div>
-              )}
-              getLink={(item) => buildEquipmentUrl(primaryProjectId, item.externalId)}
-            />
-          </div>
         </>
       ) : (
         <EquipmentChecklistMatrix

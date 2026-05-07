@@ -43,6 +43,7 @@ import {
   tasksApi,
   issuesApi,
 } from '../../services/api'
+import { emitSyncRefresh } from '../../hooks/useSyncRefreshSignal'
 
 const PRIMARY_TABS = [
   { label: 'Tracker Pulse', to: '/tracker-pulse', icon: LayoutGrid },
@@ -264,8 +265,6 @@ export default function Navbar() {
     setActiveProject,
     setSelectedProjects,
     toggleProject,
-    period,
-    setPeriod,
   } = useProject()
   const navigate = useNavigate()
   const location = useLocation()
@@ -332,6 +331,7 @@ export default function Navbar() {
     } catch {
       // best effort
     }
+    emitSyncRefresh({ projectId: activeProject?.externalId, scope: 'scope-sync' })
     closeTimerRef.current = setTimeout(() => {
       setSyncWindowOpen(false)
     }, 2200)
@@ -937,43 +937,6 @@ export default function Navbar() {
               <span>{getWeekLabel()}</span>
             </div>
 
-            <div
-              style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: 6,
-                padding: 4,
-                borderRadius: 14,
-                border: '1px solid rgba(255,255,255,0.08)',
-                background: 'rgba(255,255,255,0.03)',
-              }}
-            >
-              {['Overall', 'D', 'W', 'M'].map((value) => {
-                const active = period === value
-                return (
-                  <button
-                    key={value}
-                    onClick={() => setPeriod(value)}
-                    title={{ Overall: 'All time', D: 'Daily', W: 'Weekly', M: 'Monthly' }[value]}
-                    style={{
-                      minWidth: value === 'Overall' ? 78 : 36,
-                      height: 34,
-                      padding: value === 'Overall' ? '0 14px' : '0 12px',
-                      borderRadius: 10,
-                      border: 'none',
-                      background: active ? 'linear-gradient(180deg, #22c1ff, #0ea5e9)' : 'transparent',
-                      color: active ? '#ffffff' : '#9fb1cd',
-                      fontSize: 12,
-                      fontWeight: 800,
-                      cursor: 'pointer',
-                      boxShadow: active ? '0 10px 24px rgba(14,165,233,0.24)' : 'none',
-                    }}
-                  >
-                    {value}
-                  </button>
-                )
-              })}
-            </div>
           </div>
         </div>
 

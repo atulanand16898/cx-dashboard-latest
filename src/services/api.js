@@ -19,6 +19,16 @@ const isAuthRoute = (url = '') =>
 const attachAuthInterceptors = (client, refreshBaseUrl) => {
   client.interceptors.request.use((config) => {
     const token = localStorage.getItem('access_token')
+    const method = (config.method || 'get').toLowerCase()
+
+    if (method === 'get') {
+      config.headers = config.headers || {}
+      config.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+      config.headers.Pragma = 'no-cache'
+      config.headers.Expires = '0'
+      config.params = { ...(config.params || {}), _ts: Date.now() }
+    }
+
     if (token && !isAuthRoute(config.url)) {
       config.headers = config.headers || {}
       config.headers.Authorization = `Bearer ${token}`

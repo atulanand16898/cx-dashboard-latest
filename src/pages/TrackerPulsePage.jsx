@@ -1,11 +1,12 @@
 import React, { useState, useEffect, useMemo } from 'react'
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine, Cell, LabelList } from 'recharts'
-import { AlertTriangle, ChevronRight, ClipboardList, Zap } from 'lucide-react'
+import { AlertTriangle, ChevronRight, ClipboardList } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { useProject } from '../context/ProjectContext'
 import { checklistsApi, issuesApi, tasksApi } from '../services/api'
 import { CHECKLIST_TAG_COLORS, DASHBOARD_CHECKLIST_TAG_ORDER, checklistTagDisplayLabel, deriveChecklistTag } from '../utils/checklistTagUtils'
 import { isChecklistDone, checklistActualFinishDate } from '../utils/checklistStatusUtils'
+import { useSyncRefreshSignal } from '../hooks/useSyncRefreshSignal'
 
 const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
 const SUMMARY_MATRIX_TAG_ORDER = DASHBOARD_CHECKLIST_TAG_ORDER
@@ -343,6 +344,57 @@ function computeStats(checklists, issues, tasks) {
   }
 }
 
+function buildWeeklyProgressStats(checklists, mode = 'currentWeek') {
+  const closedChecklists = checklists.filter((checklist) => isDone(checklist.status))
+  const now = new Date()
+  const currentWeek = isoWeekLabel(now)
+
+  const scopedClosedChecklists = closedChecklists.filter((checklist) => {
+    if (mode !== 'currentWeek') return true
+    const raw = pickClosedDate(checklist)
+    if (!raw) return false
+    const date = new Date(raw)
+    return !isNaN(date) && isoWeekLabel(date) === currentWeek
+  })
+
+  const dayMap = new Map(DAYS.map((day) => [day, 0]))
+  scopedClosedChecklists.forEach((checklist) => {
+    const raw = pickClosedDate(checklist)
+    if (!raw) return
+    const date = new Date(raw)
+    if (isNaN(date)) return
+    const jsDay = date.getDay()
+    const index = jsDay === 0 ? 6 : jsDay - 1
+    dayMap.set(DAYS[index], (dayMap.get(DAYS[index]) || 0) + 1)
+  })
+
+  const averageLine = +(scopedClosedChecklists.length / 7).toFixed(1)
+  const dailyData = DAYS.map((day) => ({
+    day,
+    count: dayMap.get(day) || 0,
+    avg: averageLine,
+  }))
+
+  const bestDay = dailyData.reduce((best, entry) => (entry.count > best.count ? entry : best), dailyData[0])
+  const aboveAvgDays = averageLine > 0 ? dailyData.filter((entry) => entry.count > averageLine).length : 0
+  const avgPerDay = scopedClosedChecklists.length > 0 ? calculateDailyRunRate(scopedClosedChecklists) : 0
+
+  const insightText = bestDay.count > 0
+    ? `${bestDay.day} is outperforming the ${mode === 'currentWeek' ? 'current-week' : 'overall'} closure average line. Bars below the green line are under the current ${mode === 'currentWeek' ? 'week' : 'dataset'} weekday baseline.`
+    : `No checklist closures recorded for ${mode === 'currentWeek' ? 'the current week' : 'the selected dataset'} yet.`
+
+  return {
+    totalClosed: scopedClosedChecklists.length,
+    avgPerDay,
+    averageLine,
+    dailyData,
+    bestDay,
+    aboveAvgDays,
+    insightText,
+    modeLabel: mode === 'currentWeek' ? 'current week' : 'current dataset',
+  }
+}
+
 // ── Sub-components ─────────────────────────────────────────────────────────────
 const StatCard = ({ label, value, sub, valueColor }) => (
   <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 12, padding: '18px 20px' }}>
@@ -522,6 +574,7 @@ const CustomTooltip = ({ active, payload, label }) => {
 function useMultiProjectData() {
   const { selectedProjects, activeProject } = useProject()
   const targets = selectedProjects.length > 0 ? selectedProjects : (activeProject ? [activeProject] : [])
+  const refreshSignal = useSyncRefreshSignal(targets.map((project) => project.externalId || project.id))
   const [data, setData]       = useState({ checklists: [], issues: [], tasks: [] })
   const [loading, setLoading] = useState(false)
 
@@ -540,7 +593,7 @@ function useMultiProjectData() {
       tasks:      results.flatMap(r => r[2]),
     })).finally(() => setLoading(false))
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [targets.map(p => p.externalId).join(',')])
+  }, [targets.map(p => p.externalId).join(','), refreshSignal])
 
   return { data, loading }
 }
@@ -550,6 +603,11 @@ export default function TrackerPulsePage() {
   const navigate = useNavigate()
   const { data, loading } = useMultiProjectData()
   const stats = useMemo(() => computeStats(data.checklists, data.issues, data.tasks), [data])
+  const [weeklyProgressMode, setWeeklyProgressMode] = useState('currentWeek')
+  const weeklyProgress = useMemo(
+    () => buildWeeklyProgressStats(data.checklists, weeklyProgressMode),
+    [data.checklists, weeklyProgressMode]
+  )
 
   if (loading) return (
     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: 300, gap: 12 }}>
@@ -684,29 +742,73 @@ export default function TrackerPulsePage() {
 
         {/* ── Weekly Progress ─────────────────────────────────────────────────── */}
         <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 14, padding: '20px' }}>
-          <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 2 }}>Weekly Progress</div>
-          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4 }}>
-            Daily checklist closures with {stats.avgPerDay} daily run rate from closure dates
+          <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, marginBottom: 2 }}>
+            <div>
+              <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 2 }}>Weekly Progress</div>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                Daily checklist closures with {weeklyProgress.avgPerDay} daily run rate from closure dates
+              </div>
+            </div>
+            <div
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 4,
+                padding: 4,
+                borderRadius: 12,
+                border: '1px solid var(--border)',
+                background: 'var(--bg-card)',
+                flexShrink: 0,
+              }}
+            >
+              {[
+                { key: 'currentWeek', label: 'Current Week' },
+                { key: 'overall', label: 'Overall' },
+              ].map((option) => {
+                const active = weeklyProgressMode === option.key
+                return (
+                  <button
+                    key={option.key}
+                    onClick={() => setWeeklyProgressMode(option.key)}
+                    style={{
+                      minWidth: option.key === 'currentWeek' ? 102 : 72,
+                      height: 32,
+                      padding: '0 12px',
+                      borderRadius: 9,
+                      border: 'none',
+                      background: active ? 'linear-gradient(180deg, #22c1ff, #0ea5e9)' : 'transparent',
+                      color: active ? '#fff' : '#9fb1cd',
+                      fontSize: 11,
+                      fontWeight: 800,
+                      cursor: 'pointer',
+                      boxShadow: active ? '0 8px 20px rgba(14,165,233,0.22)' : 'none',
+                    }}
+                  >
+                    {option.label}
+                  </button>
+                )
+              })}
+            </div>
           </div>
           <div style={{ fontSize: 28, fontWeight: 800, color: 'var(--text-primary)', marginBottom: 2 }}>
-            {stats.closed.toLocaleString()}
+            {weeklyProgress.totalClosed.toLocaleString()}
           </div>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
-            <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Closed checklists in current dataset</div>
+            <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Closed checklists in {weeklyProgress.modeLabel}</div>
             <div style={{ fontSize: 11, fontWeight: 600, color: '#60a5fa', background: 'rgba(96,165,250,0.12)', padding: '3px 8px', borderRadius: 6 }}>
-              Best closure day {stats.bestDay.day} ({stats.bestDay.count})
+              Best closure day {weeklyProgress.bestDay.day} ({weeklyProgress.bestDay.count})
             </div>
           </div>
 
           <ResponsiveContainer width="100%" height={200}>
-            <BarChart data={stats.dailyData} margin={{ top: 4, right: 4, bottom: 0, left: -20 }}>
+            <BarChart data={weeklyProgress.dailyData} margin={{ top: 4, right: 4, bottom: 0, left: -20 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="var(--divider)" vertical={false} />
               <XAxis dataKey="day" tick={{ fill: 'var(--text-muted)', fontSize: 11 }} axisLine={false} tickLine={false} />
               <YAxis tick={{ fill: 'var(--text-muted)', fontSize: 10 }} axisLine={false} tickLine={false} />
               {/* Tooltip shows both bar value AND avg line value — matching modum.me hover */}
               <Tooltip content={<CustomTooltip />} cursor={{ fill: 'var(--divider)', opacity: 0.4 }} />
               {/* Green avg reference line — all-time total / 7 days */}
-              <ReferenceLine y={stats.allTimeAvgPerDayOfWeek} stroke="#22c55e" strokeWidth={1.5} strokeDasharray="0" />
+              <ReferenceLine y={weeklyProgress.averageLine} stroke="#22c55e" strokeWidth={1.5} strokeDasharray="0" />
               <Bar dataKey="count" radius={[4, 4, 0, 0]}>
                 <LabelList
                   dataKey="count"
@@ -714,9 +816,9 @@ export default function TrackerPulsePage() {
                   formatter={(value) => (value ? value : '')}
                   style={{ fill: '#cbd5e1', fontSize: 10, fontWeight: 700 }}
                 />
-                {stats.dailyData.map((entry, i) => (
+                {weeklyProgress.dailyData.map((entry, i) => (
                   <Cell key={i}
-                    fill={entry.day === stats.bestDay.day ? '#38bdf8' : '#1d4ed8'}
+                    fill={entry.day === weeklyProgress.bestDay.day ? '#38bdf8' : '#1d4ed8'}
                     fillOpacity={0.85}
                   />
                 ))}
@@ -726,15 +828,15 @@ export default function TrackerPulsePage() {
 
           <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 4, display: 'flex', alignItems: 'center', gap: 6 }}>
             <div style={{ width: 20, height: 2, background: '#22c55e' }} />
-            <span>Closure average: {stats.allTimeAvgPerDayOfWeek}/day</span>
+            <span>Closure average: {weeklyProgress.averageLine}/day</span>
           </div>
 
           {/* Stats row */}
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10, marginTop: 14, paddingTop: 14, borderTop: '1px solid var(--divider)' }}>
             {[
-              { label: 'DAILY RUN RATE', value: stats.avgPerDay, unit: 'closures/day' },
-              { label: 'BEST DAY',      value: `${stats.bestDay.day} (${stats.bestDay.count})` },
-              { label: 'ABOVE AVG DAYS', value: stats.aboveAvgDays },
+              { label: 'DAILY RUN RATE', value: weeklyProgress.avgPerDay, unit: 'closures/day' },
+              { label: 'BEST DAY',      value: `${weeklyProgress.bestDay.day} (${weeklyProgress.bestDay.count})` },
+              { label: 'ABOVE AVG DAYS', value: weeklyProgress.aboveAvgDays },
             ].map(m => (
               <div key={m.label}>
                 <div style={{ fontSize: 9, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 3 }}>{m.label}</div>
@@ -744,9 +846,9 @@ export default function TrackerPulsePage() {
             ))}
           </div>
 
-          {stats.insightText && (
+          {weeklyProgress.insightText && (
             <div style={{ marginTop: 12, padding: '10px 14px', background: 'var(--border-subtle)', borderRadius: 8, fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.5 }}>
-              {stats.insightText}
+              {weeklyProgress.insightText}
             </div>
           )}
         </div>
@@ -817,60 +919,6 @@ export default function TrackerPulsePage() {
           )}
         </div>
 
-      </div>
-
-      <div style={{
-        background: 'linear-gradient(180deg, rgba(17,24,39,0.92), rgba(15,23,42,0.96))',
-        border: '1px solid rgba(245,158,11,0.22)',
-        borderRadius: 18,
-        padding: '20px 22px',
-        display: 'flex',
-        alignItems: 'flex-start',
-        gap: 16,
-        boxShadow: '0 18px 40px rgba(2,6,23,0.18)',
-      }}>
-        <div style={{
-          width: 40,
-          height: 40,
-          borderRadius: 12,
-          background: 'rgba(245,158,11,0.12)',
-          border: '1px solid rgba(245,158,11,0.14)',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          color: '#fbbf24',
-          flexShrink: 0,
-        }}>
-          <Zap size={18} />
-        </div>
-
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{
-            fontSize: 12,
-            fontWeight: 800,
-            color: '#f59e0b',
-            textTransform: 'uppercase',
-            letterSpacing: '0.12em',
-            marginBottom: 6,
-          }}>
-            Project Health Insight
-          </div>
-          <div style={{ fontSize: 16, color: 'var(--text-secondary)', lineHeight: 1.55, marginBottom: 12 }}>
-            Outstanding execution — {stats.completion.toFixed(1)}% checklist completion ({stats.closed} of {stats.total}). {stats.openIssues} open issue{stats.openIssues !== 1 ? 's' : ''} remaining.
-          </div>
-
-          <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 22 }}>
-            <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-              Completion: <span style={{ color: '#22c55e', fontWeight: 800 }}>{stats.completion.toFixed(1)}%</span>
-            </div>
-            <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-              Checklists: <span style={{ color: 'var(--text-primary)', fontWeight: 800 }}>{stats.closed}/{stats.total}</span>
-            </div>
-            <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-              Open Issues: <span style={{ color: '#f59e0b', fontWeight: 800 }}>{stats.openIssues}</span>
-            </div>
-          </div>
-        </div>
       </div>
     </div>
   )

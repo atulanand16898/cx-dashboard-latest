@@ -4,6 +4,7 @@ import { syncApi, projectsApi, briefsApi, checklistsApi } from '../services/api'
 import { SyncResultCard, Skeleton, StatCard, TabSwitcher } from '../components/ui'
 import { useProject } from '../context/ProjectContext'
 import toast from 'react-hot-toast'
+import { emitSyncRefresh } from '../hooks/useSyncRefreshSignal'
 
 const SYNC_TYPES = [
   { key: 'issues',    label: 'Issues',    color: 'text-red-400' },
@@ -64,6 +65,7 @@ export default function SyncPage() {
           clearInterval(pollRef.current)
           setSyncingAll(false)
           loadStats()
+          emitSyncRefresh({ scope: 'full-sync' })
           toast.success('Full sync complete!')
         }
       }, 2000)
@@ -82,6 +84,7 @@ export default function SyncPage() {
         ? await checklistsApi.syncWithStatusDates(activeProject?.externalId)
         : await syncApi[`sync${type.charAt(0).toUpperCase() + type.slice(1)}`](projectIds)
       setResults(r => ({ ...r, [type]: res.data.data }))
+      emitSyncRefresh({ projectId: activeProject?.externalId, scope: `${type}-sync` })
       toast.success(`${type} synced!`)
     } catch (err) {
       toast.error(`${type} sync failed`)
@@ -96,6 +99,7 @@ export default function SyncPage() {
     try {
       const res = await syncApi.syncProject(activeProject.externalId)
       setResults(r => ({ ...r, _project: res.data.data }))
+      emitSyncRefresh({ projectId: activeProject.externalId, scope: 'project-sync' })
       toast.success('Project synced!')
     } catch (err) {
       toast.error('Project sync failed')
