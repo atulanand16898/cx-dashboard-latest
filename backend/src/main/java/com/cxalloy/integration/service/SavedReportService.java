@@ -402,7 +402,7 @@ public class SavedReportService {
 
         if (sections.contains("checklists")) {
             Map<String, Long> byTag = orderedCountMap(
-                    checklists.stream().collect(Collectors.groupingBy(checklist -> defaultLabel(checklist.getTagLevel(), "unknown"), Collectors.counting())),
+                    checklists.stream().collect(Collectors.groupingBy(this::resolveChecklistCategory, Collectors.counting())),
                     TAG_ORDER
             );
             Map<String, Long> byStatus = orderedCountMap(
@@ -435,8 +435,8 @@ public class SavedReportService {
                     .map(checklist -> row(
                             "name", valueOrEmpty(checklist.getName()),
                             "status", defaultLabel(checklist.getStatus(), "Unknown"),
-                            "category", firstNonBlank(tagDisplayLabel(defaultLabel(checklist.getTagLevel(), "")), defaultLabel(checklist.getChecklistType(), "Unknown")),
-                            "tagLevel", defaultLabel(checklist.getTagLevel(), "unknown"),
+                            "category", firstNonBlank(tagDisplayLabel(resolveChecklistCategory(checklist)), defaultLabel(checklist.getChecklistType(), "Unknown")),
+                            "tagLevel", resolveChecklistCategory(checklist),
                             "assignedTo", valueOrEmpty(checklist.getAssignedTo()),
                             "dueDate", valueOrEmpty(checklist.getDueDate()),
                             "openDays", checklistOpenDays(checklist)
@@ -446,10 +446,10 @@ public class SavedReportService {
             long cxaToVerifyCount = checklists.stream().filter(this::isCxaToVerifyChecklist).count();
             List<Map<String, Object>> cxaRows = checklists.stream()
                     .filter(this::isCxaToVerifyChecklist)
-                    .sorted(Comparator.comparing(c -> defaultLabel(c.getTagLevel(), "zzz")))
+                    .sorted(Comparator.comparing(this::resolveChecklistCategory))
                     .map(c -> row(
                             "name", valueOrEmpty(c.getName()),
-                            "category", firstNonBlank(tagDisplayLabel(defaultLabel(c.getTagLevel(), "")), defaultLabel(c.getChecklistType(), "Unknown")),
+                            "category", firstNonBlank(tagDisplayLabel(resolveChecklistCategory(c)), defaultLabel(c.getChecklistType(), "Unknown")),
                             "status", defaultLabel(c.getStatus(), "Unknown"),
                             "assignedTo", valueOrEmpty(c.getAssignedTo()),
                             "dueDate", valueOrEmpty(c.getDueDate()),
@@ -736,7 +736,7 @@ public class SavedReportService {
                 checklists.stream()
                         .filter(this::isClosedChecklist)
                         .filter(checklist -> withinRange(checklistFinishedDate(checklist), range))
-                        .collect(Collectors.groupingBy(checklist -> defaultLabel(checklist.getTagLevel(), "unknown"), Collectors.counting())),
+                        .collect(Collectors.groupingBy(this::resolveChecklistCategory, Collectors.counting())),
                 TAG_ORDER
         );
 
@@ -753,7 +753,7 @@ public class SavedReportService {
         return DELIVERY_TAG_ORDER.stream()
                 .map(tag -> {
                     List<Checklist> bucket = checklists.stream()
-                            .filter(checklist -> tag.equalsIgnoreCase(defaultLabel(checklist.getTagLevel(), "unknown")))
+                            .filter(checklist -> tag.equals(resolveChecklistCategory(checklist)))
                             .toList();
                     long total = bucket.size();
                     long closed = bucket.stream().filter(this::isClosedChecklist).count();
@@ -821,7 +821,7 @@ public class SavedReportService {
         return DELIVERY_TAG_ORDER.stream()
                 .map(tag -> {
                     List<Checklist> bucket = checklists.stream()
-                            .filter(checklist -> tag.equalsIgnoreCase(defaultLabel(checklist.getTagLevel(), "unknown")))
+                            .filter(checklist -> tag.equals(resolveChecklistCategory(checklist)))
                             .toList();
                     long total = bucket.size();
                     long closed = bucket.stream().filter(this::isClosedChecklist).count();
@@ -893,9 +893,41 @@ public class SavedReportService {
     }
 
     private String resolveChecklistCategory(Checklist checklist) {
-        String tag = normalize(defaultLabel(checklist.getTagLevel(), ""));
-        if ("red".equals(tag) || "yellow".equals(tag) || "green".equals(tag) || "blue".equals(tag)) return tag;
-        return "non_critical";
+        List<String> sources = Stream.of(
+                        checklist.getTagLevel(),
+                        checklist.getChecklistType(),
+                        checklist.getName(),
+                        checklist.getRawJson()
+                )
+                .filter(StringUtils::hasText)
+                .toList();
+
+        for (String source : sources) {
+            String tag = detectPrimaryChecklistTag(source);
+            if (tag != null) {
+                return tag;
+            }
+        }
+
+        for (String source : sources) {
+            if (isNonCriticalChecklistTag(source)) {
+                return "non_critical";
+            }
+        }
+
+        String directTag = normalize(defaultLabel(checklist.getTagLevel(), ""));
+        if (Set.of("red", "yellow", "green", "blue", "white").contains(directTag)) {
+            return directTag;
+        }
+
+        for (String source : sources) {
+            String tag = detectLegacyChecklistTag(source);
+            if (tag != null) {
+                return tag;
+            }
+        }
+
+        return Set.of("red", "yellow", "green", "blue", "white").contains(directTag) ? directTag : "white";
     }
 
     private List<Map<String, Object>> buildChecklistOutlierRows(List<Checklist> checklists) {
@@ -904,7 +936,7 @@ public class SavedReportService {
                 .map(checklist -> row(
                         "name", valueOrEmpty(checklist.getName()),
                         "status", readableLabel(defaultLabel(checklist.getStatus(), "unknown")),
-                        "category", firstNonBlank(tagDisplayLabel(defaultLabel(checklist.getTagLevel(), "")), defaultLabel(checklist.getChecklistType(), "Unknown")),
+                        "category", firstNonBlank(tagDisplayLabel(resolveChecklistCategory(checklist)), defaultLabel(checklist.getChecklistType(), "Unknown")),
                         "openDays", checklistOpenDays(checklist)
                 ))
                 .sorted(Comparator.comparing((Map<String, Object> row) -> longValue(row.get("openDays"))).reversed())
@@ -953,7 +985,7 @@ public class SavedReportService {
         return DELIVERY_TAG_ORDER.stream()
                 .map(tag -> {
                     List<Checklist> bucket = checklists.stream()
-                            .filter(checklist -> tag.equalsIgnoreCase(defaultLabel(checklist.getTagLevel(), "unknown")))
+                            .filter(checklist -> tag.equals(resolveChecklistCategory(checklist)))
                             .toList();
                     long total = bucket.size();
                     if (total == 0) {
@@ -4321,7 +4353,7 @@ public class SavedReportService {
     private List<Map<String, Object>> checklistProgressByTag(List<Checklist> checklists) {
         return progressByCategory(
                 checklists,
-                checklist -> defaultLabel(checklist.getTagLevel(), "unknown"),
+                this::resolveChecklistCategory,
                 this::isClosedChecklist,
                 TAG_ORDER
         );
@@ -4568,20 +4600,63 @@ public class SavedReportService {
             case "yellow" -> "Yellow Tag (L2 / L2B)";
             case "green" -> "Green Tag (L3)";
             case "blue" -> "Blue Tag (L4)";
+            case "non_critical" -> "Non-Critical Checklist";
             case "white" -> "L5 White Tag";
             default -> "";
         };
     }
 
     private String checklistLevel(Checklist checklist) {
-        String source = Stream.of(checklist.getTagLevel(), checklist.getChecklistType(), checklist.getName())
-                .filter(StringUtils::hasText)
-                .map(this::normalize)
-                .collect(Collectors.joining(" "));
-        if (source.contains("red") || source.contains("l1") || source.contains("level-1") || source.contains("level 1")) return "L1";
-        if (source.contains("yellow") || source.contains("l2") || source.contains("level-2") || source.contains("level 2")) return "L2";
-        if (source.contains("green") || source.contains("l3") || source.contains("level-3") || source.contains("level 3")) return "L3";
-        if (source.contains("blue") || source.contains("l4") || source.contains("level-4") || source.contains("level 4")) return "L4";
+        return switch (resolveChecklistCategory(checklist)) {
+            case "red" -> "L1";
+            case "yellow" -> "L2";
+            case "green" -> "L3";
+            case "blue" -> "L4";
+            default -> null;
+        };
+    }
+
+    private String detectPrimaryChecklistTag(String value) {
+        String text = normalize(value);
+        if (!StringUtils.hasText(text)) {
+            return null;
+        }
+
+        if (text.matches(".*\\bl5\\b.*") || text.matches(".*\\blevel[-_\\s]?5\\b.*") || "5".equals(text)) return "white";
+        if (text.matches(".*\\bl2[-_\\s]?a\\b.*") || text.matches(".*\\blevel[-_\\s]?2[-_\\s]?a\\b.*")) return "red";
+        if (text.matches(".*\\bl2[-_\\s]?b\\b.*") || text.matches(".*\\blevel[-_\\s]?2[-_\\s]?b\\b.*")) return "yellow";
+        if (text.matches(".*\\bl1\\b.*") || text.matches(".*\\blevel[-_\\s]?1\\b.*") || "1".equals(text)) return "red";
+        if (text.matches(".*\\bl2\\b.*") || text.matches(".*\\blevel[-_\\s]?2\\b.*") || "2".equals(text)) return "yellow";
+        if (text.matches(".*\\bl3\\b.*") || text.matches(".*\\blevel[-_\\s]?3\\b.*") || "3".equals(text)) return "green";
+        if (text.matches(".*\\bl4\\b.*") || text.matches(".*\\blevel[-_\\s]?4\\b.*") || "4".equals(text)) return "blue";
+        return null;
+    }
+
+    private boolean isNonCriticalChecklistTag(String value) {
+        String text = normalize(value);
+        return StringUtils.hasText(text) && (text.contains("non critical") || text.contains("non-critical") || text.matches(".*\\bnc\\b.*"));
+    }
+
+    private String detectLegacyChecklistTag(String value) {
+        String text = normalize(value);
+        if (!StringUtils.hasText(text)) {
+            return null;
+        }
+
+        if (text.matches(".*\\bitr[-_\\s]?a\\b.*") || "itra".equals(text) || "itr-a".equals(text)) return "red";
+        if (text.matches(".*\\bitr[-_\\s]?b\\b.*") || "itrb".equals(text) || "itr-b".equals(text)) return "yellow";
+        if (text.matches(".*\\bitr[-_\\s]?c\\b.*") || "itrc".equals(text) || "itr-c".equals(text)) return "green";
+        if (text.matches(".*\\bitr[-_\\s]?d\\b.*") || "itrd".equals(text) || "itr-d".equals(text)) return "blue";
+
+        if (text.matches(".*\\bred\\b.*")) return "red";
+        if (text.matches(".*\\byellow\\b.*")) return "yellow";
+        if (text.matches(".*\\bgreen\\b.*")) return "green";
+        if (text.matches(".*\\bblue\\b.*")) return "blue";
+
+        if (text.contains("pre-cx") || text.contains("precx") || text.contains("pre cx") || text.contains("fat")) return "red";
+        if (text.matches(".*\\bcx[-_]?a\\b.*") || text.contains("installation") || text.contains("qa/qc") || text.contains("ivc")) return "yellow";
+        if (text.matches(".*\\bcx[-_]?b\\b.*") || text.contains("startup") || text.contains("start-up") || text.contains("pre-functional") || text.contains("prefunctional") || text.contains("pfc")) return "green";
+        if (text.contains("functional performance") || text.contains("fpt") || text.contains("sign-off") || text.contains("sign off")) return "blue";
         return null;
     }
 
