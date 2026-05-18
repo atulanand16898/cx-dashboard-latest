@@ -237,6 +237,21 @@ function getLevelPercent(closed, total) {
   return Math.round((closed / total) * 100)
 }
 
+function getChecklistTotalsForRow(row) {
+  return LEVELS.reduce((acc, level) => {
+    acc.total += row.levels[level.key].total
+    acc.closed += row.levels[level.key].closed
+    return acc
+  }, { total: 0, closed: 0 })
+}
+
+function getCompletionStatus(percent, total) {
+  if (!total) return 'No Checklists'
+  if (percent >= 100) return 'Complete'
+  if (percent > 0) return 'In Progress'
+  return 'Not Started'
+}
+
 function getCellStyle(percent, level) {
   if (percent >= 100) {
     return {
@@ -301,6 +316,180 @@ function SummaryCard({ icon: Icon, label, value, subValue, tone = '#38bdf8' }) {
 
 function SectionTable({ section, onOpenMatrix }) {
   const hasOverflow = section.rows.length > 12
+
+  if (section.discipline === 'Non-Critical') {
+    const sectionChecklistTotals = section.rows.reduce((acc, row) => {
+      const totals = getChecklistTotalsForRow(row)
+      acc.total += totals.total
+      acc.closed += totals.closed
+      return acc
+    }, { total: 0, closed: 0 })
+    const sectionCompletion = getLevelPercent(sectionChecklistTotals.closed, sectionChecklistTotals.total)
+
+    return (
+      <div
+        style={{
+          background: 'linear-gradient(180deg, rgba(17,24,39,0.94), rgba(15,23,42,0.94))',
+          border: '1px solid rgba(255,255,255,0.08)',
+          borderRadius: 18,
+          overflow: 'hidden',
+          minWidth: 0,
+        }}
+      >
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 12,
+            padding: '14px 16px',
+            borderBottom: '1px solid rgba(255,255,255,0.06)',
+            background: 'linear-gradient(90deg, rgba(37,99,235,0.22), rgba(29,78,216,0.06))',
+          }}
+        >
+          <div>
+            <div style={{ fontSize: 14, fontWeight: 800, color: '#f8fafc' }}>{section.discipline} Equipment Tracker</div>
+            <div style={{ fontSize: 12, color: '#8ea4c8', marginTop: 4 }}>
+              {section.totalUnits} units • {section.rows.length} equipment types
+            </div>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+            <span
+              style={{
+                padding: '6px 10px',
+                borderRadius: 999,
+                background: 'rgba(148, 163, 184, 0.12)',
+                border: '1px solid rgba(148, 163, 184, 0.24)',
+                color: '#cbd5e1',
+                fontSize: 11,
+                fontWeight: 800,
+              }}
+            >
+              Checklists {sectionChecklistTotals.total}
+            </span>
+            <span
+              style={{
+                padding: '6px 10px',
+                borderRadius: 999,
+                background: 'rgba(96, 165, 250, 0.12)',
+                border: '1px solid rgba(96, 165, 250, 0.24)',
+                color: '#93c5fd',
+                fontSize: 11,
+                fontWeight: 800,
+              }}
+            >
+              Closed {sectionChecklistTotals.closed}
+            </span>
+            <span
+              style={{
+                padding: '6px 10px',
+                borderRadius: 999,
+                background: 'rgba(34, 197, 94, 0.12)',
+                border: '1px solid rgba(34, 197, 94, 0.24)',
+                color: '#86efac',
+                fontSize: 11,
+                fontWeight: 800,
+              }}
+            >
+              Completion {sectionCompletion}%
+            </span>
+          </div>
+        </div>
+
+        <div style={{ overflowX: 'auto', maxHeight: hasOverflow ? 760 : 'none', overflowY: hasOverflow ? 'auto' : 'visible' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 560 }}>
+            <thead>
+              <tr style={{ background: 'rgba(255,255,255,0.02)' }}>
+                <th style={tableHeadStyle('left', 220)}>Equipment Type</th>
+                <th style={tableHeadStyle('left', 72)}>Units</th>
+                <th style={tableHeadStyle('left', 110)}>Checklists</th>
+                <th style={tableHeadStyle('left', 160)}>Completion Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {section.rows.map((row, index) => {
+                const totals = getChecklistTotalsForRow(row)
+                const percent = getLevelPercent(totals.closed, totals.total)
+                const status = getCompletionStatus(percent, totals.total)
+                return (
+                  <tr key={`${section.discipline}-${row.type}`} style={{ background: index % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.018)' }}>
+                    <td style={tableCellStyle(220, true)}>
+                      <button
+                        onClick={() => onOpenMatrix(row.type)}
+                        style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: 8,
+                          padding: 0,
+                          border: 'none',
+                          background: 'transparent',
+                          color: '#f8fafc',
+                          fontSize: 14,
+                          fontWeight: 800,
+                          fontFamily: 'inherit',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        <span style={{ textAlign: 'left' }}>{row.type}</span>
+                        <ChevronRight size={15} color="#60a5fa" />
+                      </button>
+                    </td>
+                    <td style={tableCellStyle(72)}>{row.units}</td>
+                    <td style={tableCellStyle(110)}>
+                      <div style={{ fontSize: 15, fontWeight: 800, color: '#f8fafc' }}>{totals.total}</div>
+                      <div style={{ fontSize: 10, color: '#8ea4c8', marginTop: 2 }}>
+                        {totals.closed}/{totals.total} closed
+                      </div>
+                    </td>
+                    <td style={{ ...tableCellStyle(160), padding: 0 }}>
+                      <div
+                        style={{
+                          display: 'flex',
+                          flexDirection: 'column',
+                          alignItems: 'flex-start',
+                          justifyContent: 'center',
+                          gap: 3,
+                          minHeight: 62,
+                          padding: '10px 12px',
+                          background: 'rgba(148, 163, 184, 0.10)',
+                          borderLeft: '1px solid rgba(148, 163, 184, 0.18)',
+                        }}
+                      >
+                        <div style={{ fontSize: 15, fontWeight: 800, color: '#e2e8f0' }}>{status}</div>
+                        <div style={{ fontSize: 10, color: '#d7e4f7' }}>{percent}% complete</div>
+                      </div>
+                    </td>
+                  </tr>
+                )
+              })}
+              <tr style={{ background: 'rgba(37,99,235,0.08)' }}>
+                <td style={tableCellStyle(220, true, true)}>{section.discipline.toUpperCase()} AVG</td>
+                <td style={tableCellStyle(72, false, true)}>{section.totalUnits}</td>
+                <td style={tableCellStyle(110, false, true)}>{sectionChecklistTotals.total}</td>
+                <td style={{ ...tableCellStyle(160, false, true), color: '#e2e8f0' }}>
+                  {getCompletionStatus(sectionCompletion, sectionChecklistTotals.total)} ({sectionCompletion}%)
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        {hasOverflow && (
+          <div
+            style={{
+              padding: '10px 16px',
+              borderTop: '1px solid rgba(255,255,255,0.06)',
+              background: 'rgba(255,255,255,0.02)',
+              color: '#8ea4c8',
+              fontSize: 12,
+              fontWeight: 700,
+            }}
+          >
+            Showing all equipment types. Scroll inside this table after the first 12 rows.
+          </div>
+        )}
+      </div>
+    )
+  }
 
   return (
     <div

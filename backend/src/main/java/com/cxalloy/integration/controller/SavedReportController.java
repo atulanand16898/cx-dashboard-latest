@@ -1,7 +1,10 @@
 package com.cxalloy.integration.controller;
 
 import com.cxalloy.integration.dto.ApiResponse;
+import com.cxalloy.integration.dto.ReportAutomationSettingsRequest;
 import com.cxalloy.integration.dto.SavedReportRequest;
+import com.cxalloy.integration.service.ProjectAccessService;
+import com.cxalloy.integration.service.ReportAutomationService;
 import com.cxalloy.integration.service.SavedReportService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -20,29 +23,39 @@ public class SavedReportController {
     private static final Logger logger = LoggerFactory.getLogger(SavedReportController.class);
 
     private final SavedReportService savedReportService;
+    private final ProjectAccessService projectAccessService;
+    private final ReportAutomationService reportAutomationService;
 
-    public SavedReportController(SavedReportService savedReportService) {
+    public SavedReportController(SavedReportService savedReportService,
+                                 ProjectAccessService projectAccessService,
+                                 ReportAutomationService reportAutomationService) {
         this.savedReportService = savedReportService;
+        this.projectAccessService = projectAccessService;
+        this.reportAutomationService = reportAutomationService;
     }
 
     @GetMapping
     public ResponseEntity<ApiResponse<List<Map<String, Object>>>> getReports(@RequestParam String projectId) {
+        projectAccessService.requireAdmin();
         List<Map<String, Object>> reports = savedReportService.getReports(projectId);
         return ResponseEntity.ok(ApiResponse.success(reports, reports.size()));
     }
 
     @GetMapping("/options")
     public ResponseEntity<ApiResponse<Map<String, Object>>> getOptions(@RequestParam String projectId) {
+        projectAccessService.requireAdmin();
         return ResponseEntity.ok(ApiResponse.success(savedReportService.getFilterOptions(projectId)));
     }
 
     @GetMapping("/{id}")
     public ResponseEntity<ApiResponse<Map<String, Object>>> getReport(@PathVariable Long id) {
+        projectAccessService.requireAdmin();
         return ResponseEntity.ok(ApiResponse.success(savedReportService.getReport(id)));
     }
 
     @PostMapping("/generate")
     public ResponseEntity<ApiResponse<Map<String, Object>>> generate(@RequestBody SavedReportRequest request) {
+        projectAccessService.requireAdmin();
         try {
             return ResponseEntity.ok(ApiResponse.success(
                     savedReportService.generateReport(request),
@@ -56,9 +69,41 @@ public class SavedReportController {
         }
     }
 
+    @GetMapping("/automation")
+    public ResponseEntity<ApiResponse<Map<String, Object>>> getAutomationSettings(@RequestParam String projectId) {
+        projectAccessService.requireAdmin();
+        return ResponseEntity.ok(ApiResponse.success(reportAutomationService.getSettings(projectId)));
+    }
+
+    @PutMapping("/automation")
+    public ResponseEntity<ApiResponse<Map<String, Object>>> saveAutomationSettings(@RequestBody ReportAutomationSettingsRequest request) {
+        projectAccessService.requireAdmin();
+        return ResponseEntity.ok(ApiResponse.success(
+                reportAutomationService.saveSettings(request),
+                "Report automation settings saved"
+        ));
+    }
+
+    @PostMapping("/automation/run")
+    public ResponseEntity<ApiResponse<Map<String, Object>>> runAutomationNow(@RequestBody ReportAutomationSettingsRequest request) {
+        projectAccessService.requireAdmin();
+        try {
+            return ResponseEntity.ok(ApiResponse.success(
+                    reportAutomationService.runNow(request),
+                    "Scheduled export completed"
+            ));
+        } catch (Exception e) {
+            logger.error("Scheduled export run failed for project {}: {}", request.getProjectId(), e.getMessage(), e);
+            return ResponseEntity.status(500).body(ApiResponse.error(
+                    "Scheduled export failed: " + (e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage())
+            ));
+        }
+    }
+
     @GetMapping("/{id}/download")
     public ResponseEntity<byte[]> download(@PathVariable Long id,
                                            @RequestParam(defaultValue = "json") String format) {
+        projectAccessService.requireAdmin();
         byte[] bytes = savedReportService.downloadReport(id, format);
         String fileName = savedReportService.downloadFileName(id, format);
         MediaType mediaType = "csv".equalsIgnoreCase(format)

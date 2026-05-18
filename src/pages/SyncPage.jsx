@@ -24,6 +24,8 @@ export default function SyncPage() {
   const [status, setStatus] = useState(null)
   const [statsLoading, setStatsLoading] = useState(true)
   const [syncingAll, setSyncingAll] = useState(false)
+  const [syncingProjectsOnlyAll, setSyncingProjectsOnlyAll] = useState(false)
+  const [projectsOnlyResult, setProjectsOnlyResult] = useState(null)
   const [results, setResults] = useState({})
   const [syncing, setSyncing] = useState({})
   const [tab, setTab] = useState('individual')
@@ -72,6 +74,24 @@ export default function SyncPage() {
     } catch (err) {
       toast.error(err.response?.data?.message || 'Sync failed')
       setSyncingAll(false)
+    }
+  }
+
+  const syncAllProjectsOnly = async () => {
+    setSyncingProjectsOnlyAll(true)
+    setProjectsOnlyResult(null)
+    try {
+      const res = await projectsApi.syncAll()
+      setProjectsOnlyResult(res?.data?.data || null)
+      await loadStats()
+      emitSyncRefresh({ scope: 'projects-only-all-sync' })
+      toast.success('Projects-only sync completed!')
+    } catch (err) {
+      const message = err.response?.data?.message || 'Projects-only sync failed'
+      setProjectsOnlyResult({ status: 'FAILED', message })
+      toast.error(message)
+    } finally {
+      setSyncingProjectsOnlyAll(false)
     }
   }
 
@@ -334,17 +354,34 @@ export default function SyncPage() {
           <div className="flex items-center gap-3">
             <button
               onClick={startFullSync}
-              disabled={syncingAll || isRunning}
+              disabled={syncingAll || syncingProjectsOnlyAll || isRunning}
               className="btn-primary"
             >
               <Play size={14} />
               {syncingAll || isRunning ? 'Running...' : 'Start Full Sync'}
+            </button>
+            <button
+              onClick={syncAllProjectsOnly}
+              disabled={syncingProjectsOnlyAll || syncingAll || isRunning}
+              className="btn-secondary"
+            >
+              <Database size={14} />
+              {syncingProjectsOnlyAll ? 'Syncing Projects...' : 'Sync Projects Only'}
             </button>
             <button onClick={loadStats} className="btn-secondary">
               <RefreshCw size={14} />
               Refresh Stats
             </button>
           </div>
+          <div className="text-xs text-dark-500 mt-3">
+            Projects-only sync refreshes the shared projects table for all scopes without starting the heavier all-data background job.
+          </div>
+
+          {projectsOnlyResult && (
+            <div className="mt-5">
+              <SyncResultCard result={projectsOnlyResult} />
+            </div>
+          )}
 
           {status && (
             <div className="mt-5 grid grid-cols-2 lg:grid-cols-4 gap-3">

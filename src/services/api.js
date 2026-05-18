@@ -88,6 +88,9 @@ export const projectAccessApi = {
 export const reportsApi = {
   getAll: (projectId) => api.get('/reports', { params: { projectId } }),
   getOptions: (projectId) => api.get('/reports/options', { params: { projectId } }),
+  getAutomationSettings: (projectId) => api.get('/reports/automation', { params: { projectId } }),
+  saveAutomationSettings: (payload) => api.put('/reports/automation', payload),
+  runAutomationNow: (payload) => api.post('/reports/automation/run', payload),
   getById: (id) => api.get(`/reports/${id}`),
   generate: (payload) => api.post('/reports/generate', payload),
   download: (id, format = 'json') => api.get(`/reports/${id}/download`, {

@@ -8,6 +8,8 @@ import com.cxalloy.integration.repository.RawApiResponseRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.security.core.context.SecurityContext;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Service;
 
 import java.util.*;
@@ -276,12 +278,13 @@ public class SyncService {
     private Map<String, Object> syncProjectInternal(String pid, String pName, SyncJobState job) {
         logger.info("--- Parallel sync starting: {} ({}) ---", pName, pid);
         long start = System.currentTimeMillis();
+        SecurityContext callerContext = SecurityContextHolder.getContext();
 
-        CompletableFuture<SyncResult> issueFuture      = asyncSync(() -> issueService.syncAllIssues(pid),      "/issue",     "issues",     pid, pName, job);
-        CompletableFuture<SyncResult> taskFuture       = asyncSync(() -> taskService.syncTasks(pid),           "/task",      "tasks",      pid, pName, job);
-        CompletableFuture<SyncResult> personFuture     = asyncSync(() -> personService.syncPersons(pid),       "/person",    "persons",    pid, pName, job);
-        CompletableFuture<SyncResult> companyFuture    = asyncSync(() -> companyService.syncCompanies(pid),    "/company",   "companies",  pid, pName, job);
-        CompletableFuture<SyncResult> roleFuture       = asyncSync(() -> roleService.syncRoles(pid),           "/role",      "roles",      pid, pName, job);
+        CompletableFuture<SyncResult> issueFuture      = asyncSync(() -> issueService.syncAllIssues(pid),      "/issue",     "issues",     pid, pName, job, callerContext);
+        CompletableFuture<SyncResult> taskFuture       = asyncSync(() -> taskService.syncTasks(pid),           "/task",      "tasks",      pid, pName, job, callerContext);
+        CompletableFuture<SyncResult> personFuture     = asyncSync(() -> personService.syncPersons(pid),       "/person",    "persons",    pid, pName, job, callerContext);
+        CompletableFuture<SyncResult> companyFuture    = asyncSync(() -> companyService.syncCompanies(pid),    "/company",   "companies",  pid, pName, job, callerContext);
+        CompletableFuture<SyncResult> roleFuture       = asyncSync(() -> roleService.syncRoles(pid),           "/role",      "roles",      pid, pName, job, callerContext);
         CompletableFuture<SyncResult> checklistFuture  = asyncSync(() -> {
             SyncResult checklistResult = checklistService.syncChecklists(pid);
             SyncResult statusDateResult = checklistStatusDateService.syncProject(pid);
@@ -297,51 +300,53 @@ public class SyncService {
                     .filter(s -> !s.isBlank())
                     .collect(Collectors.joining(" | "));
             return new SyncResult("/checklist", status, recordsSynced, message, duration);
-        }, "/checklist", "checklists", pid, pName, job);
-        CompletableFuture<SyncResult> equipmentFuture  = asyncSync(() -> equipmentService.syncEquipment(pid),  "/equipment", "equipment",  pid, pName, job);
+        }, "/checklist", "checklists", pid, pName, job, callerContext);
+        CompletableFuture<SyncResult> equipmentFuture  = asyncSync(() -> equipmentService.syncEquipment(pid),  "/equipment", "equipment",  pid, pName, job, callerContext);
 
-        CompletableFuture<List<SyncResult>> assetFuture = CompletableFuture.supplyAsync(() -> {
-            if (job != null) {
-                job.markTableStarted("assets", pName);
-            }
-            try {
-                List<SyncResult> assetResults = assetService.syncAllAssets(pid);
+        CompletableFuture<List<SyncResult>> assetFuture = CompletableFuture.supplyAsync(() ->
+            withSecurityContext(callerContext, () -> {
                 if (job != null) {
-                    job.markTableCompleted("assets", pName, summarizeAssetResults(assetResults));
+                    job.markTableStarted("assets", pName);
                 }
-                return assetResults;
-            } catch (Exception e) {
-                logger.error("Assets sync failed for project {}", pid, e);
-                if (job != null) {
-                    job.markTableCompleted("assets", pName, new SyncResult("/assets", "FAILED", 0, e.getMessage(), 0));
+                try {
+                    List<SyncResult> assetResults = assetService.syncAllAssets(pid);
+                    if (job != null) {
+                        job.markTableCompleted("assets", pName, summarizeAssetResults(assetResults));
+                    }
+                    return assetResults;
+                } catch (Exception e) {
+                    logger.error("Assets sync failed for project {}", pid, e);
+                    if (job != null) {
+                        job.markTableCompleted("assets", pName, new SyncResult("/assets", "FAILED", 0, e.getMessage(), 0));
+                    }
+                    return List.of(new SyncResult("/assets", "FAILED", 0, e.getMessage(), 0));
                 }
-                return List.of(new SyncResult("/assets", "FAILED", 0, e.getMessage(), 0));
-            }
-        }, syncExecutor);
+            }), syncExecutor);
 
         // File metadata sync — runs after checklists complete to ensure records exist
-        CompletableFuture<SyncResult> filesFuture = checklistFuture.thenApplyAsync(checkResult -> {
-            if (job != null) {
-                job.markTableStarted("files", pName);
-            }
-            try {
-                long t = System.currentTimeMillis();
-                int fileCount = fileStorageService.syncFilesForProject(pid);
-                SyncResult result = new SyncResult("/files", "SUCCESS", fileCount,
-                    "File metadata synced for project " + pid, System.currentTimeMillis() - t);
+        CompletableFuture<SyncResult> filesFuture = checklistFuture.thenApplyAsync(checkResult ->
+            withSecurityContext(callerContext, () -> {
                 if (job != null) {
-                    job.markTableCompleted("files", pName, result);
+                    job.markTableStarted("files", pName);
                 }
-                return result;
-            } catch (Exception e) {
-                logger.error("Files sync failed for project {}", pid, e);
-                SyncResult result = new SyncResult("/files", "FAILED", 0, e.getMessage(), 0);
-                if (job != null) {
-                    job.markTableCompleted("files", pName, result);
+                try {
+                    long t = System.currentTimeMillis();
+                    int fileCount = fileStorageService.syncFilesForProject(pid);
+                    SyncResult result = new SyncResult("/files", "SUCCESS", fileCount,
+                        "File metadata synced for project " + pid, System.currentTimeMillis() - t);
+                    if (job != null) {
+                        job.markTableCompleted("files", pName, result);
+                    }
+                    return result;
+                } catch (Exception e) {
+                    logger.error("Files sync failed for project {}", pid, e);
+                    SyncResult result = new SyncResult("/files", "FAILED", 0, e.getMessage(), 0);
+                    if (job != null) {
+                        job.markTableCompleted("files", pName, result);
+                    }
+                    return result;
                 }
-                return result;
-            }
-        }, syncExecutor);
+            }), syncExecutor);
 
         List<SyncResult> results = new ArrayList<>();
         results.add(getResult(issueFuture,    "/issue",     pid));
@@ -397,34 +402,51 @@ public class SyncService {
     // ── Helpers ──────────────────────────────────────────────────────────────
 
     private interface SyncAction { SyncResult run() throws Exception; }
+    private interface ContextAction<T> { T run() throws Exception; }
 
     private CompletableFuture<SyncResult> asyncSync(SyncAction action,
                                                     String endpoint,
                                                     String tableKey,
                                                     String pid,
                                                     String projectName,
-                                                    SyncJobState job) {
-        return CompletableFuture.supplyAsync(() -> {
-            if (job != null) {
-                job.markTableStarted(tableKey, projectName);
-            }
-            try {
-                SyncResult result = action.run();
+                                                    SyncJobState job,
+                                                    SecurityContext callerContext) {
+        return CompletableFuture.supplyAsync(() ->
+            withSecurityContext(callerContext, () -> {
                 if (job != null) {
-                    job.markTableCompleted(tableKey, projectName, result);
+                    job.markTableStarted(tableKey, projectName);
                 }
-                return result;
-            } catch (Exception e) {
-                // FIX: pass 'e' as second arg so Logback prints the full stack trace
-                logger.error("{} sync failed for project {}", endpoint, pid, e);
-                SyncResult result = new SyncResult(endpoint, "FAILED", 0,
-                    e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName(), 0);
-                if (job != null) {
-                    job.markTableCompleted(tableKey, projectName, result);
+                try {
+                    SyncResult result = action.run();
+                    if (job != null) {
+                        job.markTableCompleted(tableKey, projectName, result);
+                    }
+                    return result;
+                } catch (Exception e) {
+                    // FIX: pass 'e' as second arg so Logback prints the full stack trace
+                    logger.error("{} sync failed for project {}", endpoint, pid, e);
+                    SyncResult result = new SyncResult(endpoint, "FAILED", 0,
+                        e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName(), 0);
+                    if (job != null) {
+                        job.markTableCompleted(tableKey, projectName, result);
+                    }
+                    return result;
                 }
-                return result;
-            }
-        }, syncExecutor);
+            }), syncExecutor);
+    }
+
+    private <T> T withSecurityContext(SecurityContext callerContext, ContextAction<T> action) {
+        SecurityContext previous = SecurityContextHolder.getContext();
+        SecurityContext next = SecurityContextHolder.createEmptyContext();
+        next.setAuthentication(callerContext != null ? callerContext.getAuthentication() : null);
+        SecurityContextHolder.setContext(next);
+        try {
+            return action.run();
+        } catch (Exception ex) {
+            throw new CompletionException(ex);
+        } finally {
+            SecurityContextHolder.setContext(previous);
+        }
     }
 
     private SyncResult summarizeAssetResults(List<SyncResult> assetResults) {

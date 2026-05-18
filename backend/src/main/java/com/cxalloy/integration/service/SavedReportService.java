@@ -2917,6 +2917,8 @@ public class SavedReportService {
         long closedChecklists = longValue(asMap(summary.get("checklists")).get("closed"));
         long remaining = totalChecklists - closedChecklists;
         String forecastDate = firstNonBlank(stringValue(executiveSummary.get("forecastCompletion")), "TBD");
+        LocalDate parsedForecastDate = parseForecastDateString(forecastDate);
+        String forecastDateDisplay = parsedForecastDate != null ? prettyDate(parsedForecastDate) : forecastDate;
         String dailyRate = firstNonBlank(stringValue(executiveSummary.get("dailyRunRate")), "N/A");
         String today = prettyDate(LocalDate.now());
         double pct = percent(closedChecklists, totalChecklists);
@@ -2939,7 +2941,7 @@ public class SavedReportService {
         sb.append(kpiCardColored(String.valueOf(totalChecklists), "Total Checklists", "Project scope", ""));
         sb.append(kpiCardColored(String.valueOf(closedChecklists), "Completed", formatPercent(pct), "kpi-card--green"));
         sb.append(kpiCardColored(String.valueOf(remaining), "Remaining", formatPercent(100.0 - pct), "kpi-card--amber"));
-        sb.append(kpiCardColored(forecastDate, "Forecast Date", "At " + dailyRate + " tags/day", "kpi-card--inprogress"));
+        sb.append(kpiCardColored(forecastDateDisplay, "Forecast Date", "At " + dailyRate + " tags/day", "kpi-card--inprogress"));
         sb.append("</div>");
 
         // How the forecast is calculated
@@ -2948,8 +2950,8 @@ public class SavedReportService {
         sb.append("<div style=\"margin-bottom:6px;\">The forecast date is generated automatically:</div>");
         sb.append("<div><b>Step 1.</b> Delivery pace: checklists closed \u00f7 elapsed days = <b>").append(escapeHtml(dailyRate)).append(" tags/day</b>.</div>");
         sb.append("<div><b>Step 2.</b> Remaining: ").append(totalChecklists).append(" \u2013 ").append(closedChecklists).append(" = <b>").append(remaining).append(" checklists</b>.</div>");
-        sb.append("<div><b>Step 3.</b> Days to completion: ").append(remaining).append(" \u00f7 ").append(escapeHtml(dailyRate)).append(" \u2248 <b>").append(daysToCompletion).append(" working days</b>.</div>");
-        sb.append("<div><b>Step 4.</b> Estimated end: ").append(escapeHtml(today)).append(" + ").append(daysToCompletion).append(" days \u2248 <b>").append(escapeHtml(forecastDate)).append("</b>.</div>");
+        sb.append("<div><b>Step 3.</b> Days to completion: ").append(remaining).append(" \u00f7 ").append(escapeHtml(dailyRate)).append(" \u2248 <b>").append(daysToCompletion).append(" calendar days</b>.</div>");
+        sb.append("<div><b>Step 4.</b> Estimated end: ").append(escapeHtml(today)).append(" + ").append(daysToCompletion).append(" calendar days \u2248 <b>").append(escapeHtml(forecastDateDisplay)).append("</b>.</div>");
         sb.append("</div>");
 
         // Important Caveat
@@ -2962,7 +2964,7 @@ public class SavedReportService {
         // Completion Trajectory chart
         sb.append("<div style=\"background:#1a2744;color:#fff;padding:6px 12px;font-size:8pt;font-weight:700;letter-spacing:0.05em;margin-bottom:0;\">COMPLETION TRAJECTORY</div>");
         sb.append("<div style=\"border:1px solid #dde4ef;padding:10px 12px;\">");
-        sb.append(buildTrajectoryChartSvg(reportData, summary, forecastDate));
+        sb.append(buildTrajectoryChartSvg(reportData, summary, parsedForecastDate));
         sb.append("</div>");
         sb.append("<div style=\"font-size:7pt;color:#64748b;margin-top:4px;\">Solid = actual progress. Dashed = forecast at current pace.</div>");
 
@@ -2973,7 +2975,7 @@ public class SavedReportService {
 
     private String buildTrajectoryChartSvg(Map<String, Object> reportData,
                                             Map<String, Object> summary,
-                                            String forecastDateStr) {
+                                            LocalDate forecastDate) {
         // Build cumulative actual progress from week-over-week data
         Map<String, Object> checklistsEntry = asMap(asMap(reportData.get("sectionData")).get("checklists"));
         List<Map<String, Object>> weekRows = asListOfMaps(checklistsEntry != null ? checklistsEntry.get("weekOverWeek") : null);
@@ -2987,14 +2989,8 @@ public class SavedReportService {
         int chartH = svgH - padT - padB;
         int bottom = padT + chartH;
 
-        // Parse forecast date
         LocalDate today = LocalDate.now();
-        LocalDate forecastEnd = today.plusDays(90);
-        try {
-            forecastEnd = LocalDate.parse(forecastDateStr, DateTimeFormatter.ofPattern("d MMM yyyy"));
-        } catch (Exception ignored) {
-            try { forecastEnd = LocalDate.parse(forecastDateStr, DateTimeFormatter.ofPattern("MMM yyyy")); } catch (Exception ignored2) {}
-        }
+        LocalDate forecastEnd = firstNonNull(forecastDate, today.plusDays(90));
 
         // Determine date range for X axis
         LocalDate xStart = today.minusMonths(3);
@@ -3004,7 +3000,7 @@ public class SavedReportService {
         // X axis tick months
         List<LocalDate> xTicks = new java.util.ArrayList<>();
         LocalDate tick = xStart.withDayOfMonth(1);
-        while (!tick.isAfter(xEnd)) { xTicks.add(tick); tick = tick.plusMonths(2); }
+        while (!tick.isAfter(xEnd)) { xTicks.add(tick); tick = tick.plusMonths(1); }
 
         // Actual data points: cumulative closed from week rows
         List<double[]> actualPoints = new java.util.ArrayList<>();
@@ -3061,7 +3057,7 @@ public class SavedReportService {
         // Forecast end label
         svg.append(String.format(Locale.US,
             "<text x=\"%.1f\" y=\"%d\" text-anchor=\"middle\" font-size=\"6.5\" fill=\"#c9a227\" font-weight=\"700\">%s</text>",
-            Math.min(forecastEndX, svgW - padR - 2.0), padT - 4, escapeHtml(forecastEnd.format(DateTimeFormatter.ofPattern("MMM yyyy")))));
+            Math.min(forecastEndX, svgW - padR - 2.0), padT - 4, escapeHtml(prettyDate(forecastEnd))));
 
         // Actual progress polyline
         if (!actualPoints.isEmpty()) {
@@ -3793,6 +3789,8 @@ public class SavedReportService {
         long closedChecklists = longValue(asMap(summary.get("checklists")).get("closed"));
         long remaining = totalChecklists - closedChecklists;
         String forecastDate = firstNonBlank(stringValue(executiveSummary.get("forecastCompletion")), "TBD");
+        LocalDate parsedForecastDate = parseForecastDateString(forecastDate);
+        String forecastDateDisplay = parsedForecastDate != null ? prettyDate(parsedForecastDate) : forecastDate;
         String dailyRate = firstNonBlank(stringValue(executiveSummary.get("dailyRunRate")), "N/A");
         double pct = percent(closedChecklists, Math.max(1, totalChecklists));
         long daysToCompletion;
@@ -3809,14 +3807,14 @@ public class SavedReportService {
                 new PdfMetric("Total Checklists", String.valueOf(totalChecklists), "project scope", new Color(26, 39, 68)),
                 new PdfMetric("Completed", String.valueOf(closedChecklists), formatPercent(pct), new Color(22, 163, 74)),
                 new PdfMetric("Remaining", String.valueOf(remaining), formatPercent(100.0 - pct), new Color(180, 83, 9)),
-                new PdfMetric("Forecast Date", forecastDate, "at " + dailyRate + " tags/day", new Color(92, 64, 0))
+                new PdfMetric("Forecast Date", forecastDateDisplay, "at " + dailyRate + " tags/day", new Color(92, 64, 0))
         ), 4, 56f);
 
         writer.headingRule("HOW THE FORECAST IS CALCULATED");
         writer.noteBox("Step 1. Delivery pace: checklists closed \u00f7 elapsed days = " + dailyRate + " tags/day.\n"
                 + "Step 2. Remaining: " + totalChecklists + " \u2013 " + closedChecklists + " = " + remaining + " checklists.\n"
-                + "Step 3. Days to completion: " + remaining + " \u00f7 " + dailyRate + " \u2248 " + daysToCompletion + " working days.\n"
-                + "Step 4. Estimated end: " + today + " + " + daysToCompletion + " days \u2248 " + forecastDate + ".");
+                + "Step 3. Days to completion: " + remaining + " \u00f7 " + dailyRate + " \u2248 " + daysToCompletion + " calendar days.\n"
+                + "Step 4. Estimated end: " + today + " + " + daysToCompletion + " calendar days \u2248 " + forecastDateDisplay + ".");
 
         writer.noteBox("Important Caveat: This forecast may be misleading if not all checklists have been uploaded. "
                 + "As additional tags are registered the total count increases and the forecast shifts. "
@@ -4536,6 +4534,35 @@ public class SavedReportService {
         }
         long daysNeeded = (long) Math.ceil(remaining / dailyRunRate);
         return LocalDate.now().plusDays(Math.max(1, daysNeeded));
+    }
+
+    private LocalDate parseForecastDateString(String value) {
+        if (!StringUtils.hasText(value) || "TBD".equalsIgnoreCase(value.trim())) {
+            return null;
+        }
+        String text = value.trim();
+        try {
+            return LocalDate.parse(text, DateTimeFormatter.ofPattern("MMM d, yyyy", Locale.US));
+        } catch (Exception ignored) {
+            // try the next supported display format
+        }
+        try {
+            return LocalDate.parse(text, DateTimeFormatter.ofPattern("d MMM yyyy", Locale.US));
+        } catch (Exception ignored) {
+            // try the next supported display format
+        }
+        try {
+            return LocalDate.parse(text);
+        } catch (Exception ignored) {
+            // try the next supported display format
+        }
+        try {
+            YearMonth ym = YearMonth.parse(text, DateTimeFormatter.ofPattern("MMM yyyy", Locale.US));
+            return ym.atDay(1);
+        } catch (Exception ignored) {
+            // no supported forecast date format matched
+        }
+        return null;
     }
 
     private LocalDate firstNonNull(LocalDate... values) {

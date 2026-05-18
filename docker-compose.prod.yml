@@ -47,6 +47,15 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       OPENAI_DEFAULT_MODEL: ${OPENAI_DEFAULT_MODEL:-gpt-5.4}
       APP_FILES_STORAGE_DIR: ${APP_FILES_STORAGE_DIR:-/tmp/project-files}
+      APP_REPORT_EXPORT_ROOT: ${APP_REPORT_EXPORT_ROOT:-/tmp/report-exports}
+      APP_REPORT_AUTOMATION_ZONE: ${APP_REPORT_AUTOMATION_ZONE:-Asia/Dubai}
+      APP_REPORT_MAIL_FROM: ${APP_REPORT_MAIL_FROM:-no-reply@modum.local}
+      SPRING_MAIL_HOST: ${SPRING_MAIL_HOST:-}
+      SPRING_MAIL_PORT: ${SPRING_MAIL_PORT:-587}
+      SPRING_MAIL_USERNAME: ${SPRING_MAIL_USERNAME:-}
+      SPRING_MAIL_PASSWORD: ${SPRING_MAIL_PASSWORD:-}
+      SPRING_MAIL_PROPERTIES_MAIL_SMTP_AUTH: ${SPRING_MAIL_PROPERTIES_MAIL_SMTP_AUTH:-true}
+      SPRING_MAIL_PROPERTIES_MAIL_SMTP_STARTTLS_ENABLE: ${SPRING_MAIL_PROPERTIES_MAIL_SMTP_STARTTLS_ENABLE:-true}
       XER_PROCESSING_STORAGE_DIR: ${XER_PROCESSING_STORAGE_DIR:-/tmp/xer-processing}
       XER_PROCESSING_PYTHON_COMMAND: ${XER_PROCESSING_PYTHON_COMMAND:-python3}
       XER_PROCESSING_PROCESSOR_SCRIPT: ${XER_PROCESSING_PROCESSOR_SCRIPT:-/app/xer_processing/python/process_baseline.py}
@@ -54,6 +63,7 @@ services:
       JAVA_TOOL_OPTIONS: ${JAVA_TOOL_OPTIONS:--XX:MaxRAM=384m -XX:InitialRAMPercentage=20 -XX:+UseSerialGC}
     volumes:
       - project_files_data:/tmp/project-files
+      - ./report-exports:/tmp/report-exports
       - xer_processing_data:/tmp/xer-processing
     expose:
       - "8081"

@@ -22,8 +22,8 @@ RUN apt-get update \
         fonts-dejavu-core \
         ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
-    && mkdir -p /tmp/project-files /tmp/xer-processing \
-    && chmod 1777 /tmp/project-files /tmp/xer-processing \
+    && mkdir -p /tmp/project-files /tmp/xer-processing /tmp/report-exports \
+    && chmod 1777 /tmp/project-files /tmp/xer-processing /tmp/report-exports \
     && groupadd --system spring \
     && useradd --system --gid spring spring
 
@@ -36,7 +36,7 @@ ENV BROWSER_BIN=/usr/bin/chromium
 COPY xer_processing /app/xer_processing
 COPY --from=builder /app/target/cxalloy-integration-1.0.0.jar /app/app.jar
 
-RUN chown -R spring:spring /app /tmp/project-files /tmp/xer-processing
+RUN chown -R spring:spring /app /tmp/project-files /tmp/xer-processing /tmp/report-exports
 
 USER spring
 

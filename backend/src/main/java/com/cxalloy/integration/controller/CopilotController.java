@@ -3,6 +3,7 @@ package com.cxalloy.integration.controller;
 import com.cxalloy.integration.dto.ApiResponse;
 import com.cxalloy.integration.dto.CopilotChatRequest;
 import com.cxalloy.integration.service.CopilotService;
+import com.cxalloy.integration.service.ProjectAccessService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -21,10 +22,14 @@ import java.util.Map;
 public class CopilotController {
 
     private final CopilotService copilotService;
+    private final ProjectAccessService projectAccessService;
     private final ObjectMapper objectMapper;
 
-    public CopilotController(CopilotService copilotService, ObjectMapper objectMapper) {
+    public CopilotController(CopilotService copilotService,
+                             ProjectAccessService projectAccessService,
+                             ObjectMapper objectMapper) {
         this.copilotService = copilotService;
+        this.projectAccessService = projectAccessService;
         this.objectMapper = objectMapper;
     }
 
@@ -34,6 +39,7 @@ public class CopilotController {
             @RequestParam(required = false) String query,
             @RequestParam(defaultValue = "true") boolean includeProjectFiles
     ) {
+        projectAccessService.requireAdmin();
         return ResponseEntity.ok(ApiResponse.success(
                 copilotService.getWorkspaceContext(projectIds, query, includeProjectFiles),
                 "Copilot workspace context"
@@ -42,6 +48,7 @@ public class CopilotController {
 
     @GetMapping("/config")
     public ResponseEntity<ApiResponse<Map<String, Object>>> config() {
+        projectAccessService.requireAdmin();
         return ResponseEntity.ok(ApiResponse.success(
                 copilotService.getCopilotConfig(),
                 "Copilot configuration"
@@ -53,6 +60,7 @@ public class CopilotController {
             @RequestPart("payload") String payload,
             @RequestPart(value = "files", required = false) List<MultipartFile> files
     ) throws Exception {
+        projectAccessService.requireAdmin();
         CopilotChatRequest request = objectMapper.readValue(payload, CopilotChatRequest.class);
         return ResponseEntity.ok(ApiResponse.success(
                 copilotService.chat(request, files),

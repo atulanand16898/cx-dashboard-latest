@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react'
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine, Cell, LabelList } from 'recharts'
-import { AlertTriangle, ChevronRight, ClipboardList } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { useProject } from '../context/ProjectContext'
 import { checklistsApi, issuesApi, tasksApi } from '../services/api'
@@ -396,13 +395,37 @@ function buildWeeklyProgressStats(checklists, mode = 'currentWeek') {
 }
 
 // ── Sub-components ─────────────────────────────────────────────────────────────
-const StatCard = ({ label, value, sub, valueColor }) => (
-  <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 12, padding: '18px 20px' }}>
-    <div style={{ fontSize: 10, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 6 }}>{label}</div>
-    <div style={{ fontSize: 26, fontWeight: 800, color: valueColor || '#38bdf8', lineHeight: 1 }}>{value}</div>
-    {sub && <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 5 }}>{sub}</div>}
-  </div>
-)
+const StatCard = ({ label, value, sub, valueColor, onClick }) => {
+  const style = { background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 12, padding: '18px 20px' }
+  if (onClick) {
+    return (
+      <button
+        type="button"
+        onClick={onClick}
+        style={{ ...style, width: '100%', textAlign: 'left', cursor: 'pointer', transition: 'transform 0.15s ease, border-color 0.15s ease', boxShadow: 'none' }}
+        onMouseEnter={(e) => {
+          e.currentTarget.style.transform = 'translateY(-1px)'
+          e.currentTarget.style.borderColor = 'rgba(56,189,248,0.35)'
+        }}
+        onMouseLeave={(e) => {
+          e.currentTarget.style.transform = 'translateY(0)'
+          e.currentTarget.style.borderColor = 'var(--border)'
+        }}
+      >
+        <div style={{ fontSize: 10, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 6 }}>{label}</div>
+        <div style={{ fontSize: 26, fontWeight: 800, color: valueColor || '#38bdf8', lineHeight: 1 }}>{value}</div>
+        {sub && <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 5 }}>{sub}</div>}
+      </button>
+    )
+  }
+  return (
+    <div style={style}>
+      <div style={{ fontSize: 10, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 6 }}>{label}</div>
+      <div style={{ fontSize: 26, fontWeight: 800, color: valueColor || '#38bdf8', lineHeight: 1 }}>{value}</div>
+      {sub && <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 5 }}>{sub}</div>}
+    </div>
+  )
+}
 
 const SummaryDonut = ({ total, closed }) => {
   const pct  = total > 0 ? Math.round(closed / total * 100) : 0
@@ -485,66 +508,6 @@ const TagDonutCard = ({ tag, label, count, closedOfTag, pct, dailyRunRate, style
 }
 
 // ── Custom tooltip — shows day value + average line (matching modum.me hover) ──
-const HighlightStatusCard = ({ icon: Icon, label, count, description, tone, onClick }) => (
-  <button
-    type="button"
-    onClick={onClick}
-    style={{
-      width: '100%',
-      background: 'linear-gradient(180deg, rgba(15,23,42,0.96), rgba(17,24,39,0.92))',
-      border: `1px solid ${tone}33`,
-      borderRadius: 14,
-      padding: '14px 16px',
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'space-between',
-      gap: 14,
-      cursor: 'pointer',
-      transition: 'transform 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease',
-      boxShadow: `0 10px 24px ${tone}12`,
-    }}
-    onMouseEnter={(e) => {
-      e.currentTarget.style.transform = 'translateY(-1px)'
-      e.currentTarget.style.borderColor = `${tone}66`
-      e.currentTarget.style.boxShadow = `0 14px 28px ${tone}1f`
-    }}
-    onMouseLeave={(e) => {
-      e.currentTarget.style.transform = 'translateY(0)'
-      e.currentTarget.style.borderColor = `${tone}33`
-      e.currentTarget.style.boxShadow = `0 10px 24px ${tone}12`
-    }}
-  >
-    <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0, flex: 1 }}>
-      <div style={{
-        width: 38,
-        height: 38,
-        borderRadius: 12,
-        background: `${tone}14`,
-        border: `1px solid ${tone}26`,
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        color: tone,
-        flexShrink: 0,
-      }}>
-        <Icon size={18} />
-      </div>
-      <div style={{ minWidth: 0, textAlign: 'left' }}>
-        <div style={{ fontSize: 12, fontWeight: 800, color: 'var(--text-primary)', marginBottom: 3 }}>{label}</div>
-        <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{description}</div>
-      </div>
-    </div>
-
-    <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
-      <div style={{ textAlign: 'right' }}>
-        <div style={{ fontSize: 22, fontWeight: 800, color: tone, lineHeight: 1 }}>{count}</div>
-        <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Items</div>
-      </div>
-      <ChevronRight size={16} color="var(--text-muted)" />
-    </div>
-  </button>
-)
-
 const CustomTooltip = ({ active, payload, label }) => {
   if (!active || !payload?.length) return null
   const val = payload.find(p => p.dataKey === 'count')
@@ -623,10 +586,6 @@ export default function TrackerPulsePage() {
     </div>
   )
 
-  const schedLabel = stats.schedVariance === 0 ? 'On schedule'
-    : stats.schedVariance > 0 ? `${stats.schedVariance}d behind` : `${Math.abs(stats.schedVariance)}d ahead`
-  const schedColor = stats.schedVariance > 7 ? '#f87171' : stats.schedVariance > 0 ? '#f59e0b' : '#4ade80'
-
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
 
@@ -640,12 +599,35 @@ export default function TrackerPulsePage() {
         />
         <StatCard label="Week Runrate" value={`${stats.runRatePerWeek}/wk`} sub="Closed checklist pace" valueColor="#818cf8" />
         <StatCard label="Daily Runrate" value={`${stats.avgPerDay}/day`} sub="Closed checklist pace" valueColor="#f59e0b" />
-        <StatCard label="Stale Checklists" value={stats.stale} sub={`${stats.stalePct}% inactive 30+ days`} valueColor="#f59e0b" />
         <StatCard
-          label="Schedule Variance"
-          value={`${stats.schedVariance === 0 ? '0d' : stats.schedVariance + 'd'}`}
-          sub={schedLabel}
-          valueColor={schedColor}
+          label="Checklist CxA Review"
+          value={stats.readyForCxaReviewChecklists}
+          sub="Ready for CxA Review"
+          valueColor="#38bdf8"
+          onClick={() => navigate('/checklists', {
+            state: {
+              listPreset: {
+                entityType: 'checklists',
+                filters: { status: 'ready_for_cxa_review' },
+                search: '',
+              },
+            },
+          })}
+        />
+        <StatCard
+          label="Issues CxA Verify"
+          value={stats.cxaToVerifyIssues}
+          sub="CxA to Verify"
+          valueColor="#f59e0b"
+          onClick={() => navigate('/issues', {
+            state: {
+              listPreset: {
+                entityType: 'issues',
+                filters: { status: 'cxa_to_verify' },
+                search: '',
+              },
+            },
+          })}
         />
         <StatCard
           label="Issues Open"
@@ -669,8 +651,7 @@ export default function TrackerPulsePage() {
           <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 4 }}>Summary Matrix</div>
           <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 16 }}>Total checklists, closed checklists, open checklists, color split, and daily run rate by category</div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(320px, 0.9fr)', gap: 18, marginBottom: 18, alignItems: 'stretch' }}>
-            <div style={{ display: 'flex', alignItems: 'flex-start', gap: 16, minWidth: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'flex-start', gap: 16, minWidth: 0, marginBottom: 18 }}>
               <SummaryDonut total={stats.total} closed={stats.closed} />
               <div style={{ display: 'flex', flexDirection: 'column', gap: 10, flex: 1 }}>
                 {[
@@ -684,42 +665,6 @@ export default function TrackerPulsePage() {
                   </div>
                 ))}
               </div>
-            </div>
-
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 12, alignContent: 'start' }}>
-              <HighlightStatusCard
-                icon={ClipboardList}
-                label="Checklist Highlight"
-                description="Ready for CxA Review"
-                count={stats.readyForCxaReviewChecklists}
-                tone="#38bdf8"
-                onClick={() => navigate('/checklists', {
-                  state: {
-                    listPreset: {
-                      entityType: 'checklists',
-                      filters: { status: 'ready_for_cxa_review' },
-                      search: '',
-                    },
-                  },
-                })}
-              />
-              <HighlightStatusCard
-                icon={AlertTriangle}
-                label="Issue Highlight"
-                description="CxA to Verify"
-                count={stats.cxaToVerifyIssues}
-                tone="#f59e0b"
-                onClick={() => navigate('/issues', {
-                  state: {
-                    listPreset: {
-                      entityType: 'issues',
-                      filters: { status: 'cxa_to_verify' },
-                      search: '',
-                    },
-                  },
-                })}
-              />
-            </div>
           </div>
 
           {/* Color rows — now using deriveTag() so red/yellow/green/blue show correctly */}

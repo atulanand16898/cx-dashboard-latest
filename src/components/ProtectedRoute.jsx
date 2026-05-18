@@ -4,8 +4,8 @@ import { useAuth } from '../context/AuthContext'
 import { Activity } from 'lucide-react'
 import { PRIVATE_LOGIN_PATH } from '../config/appRoutes'
 
-export default function ProtectedRoute({ children }) {
-  const { isAuthenticated, loading } = useAuth()
+export default function ProtectedRoute({ children, adminOnly = false, unauthorizedTo = '/tracker-pulse' }) {
+  const { isAuthenticated, isAdmin, loading } = useAuth()
 
   if (loading) {
     return (
@@ -20,5 +20,13 @@ export default function ProtectedRoute({ children }) {
     )
   }
 
-  return isAuthenticated ? children : <Navigate to={PRIVATE_LOGIN_PATH} replace />
+  if (!isAuthenticated) {
+    return <Navigate to={PRIVATE_LOGIN_PATH} replace />
+  }
+
+  if (adminOnly && !isAdmin) {
+    return <Navigate to={unauthorizedTo} replace />
+  }
+
+  return children
 }

@@ -192,6 +192,67 @@ function formatRangeLabel(dateFrom, dateTo) {
   return `${dateFrom} to ${dateTo}`
 }
 
+function defaultAutomationSettings(existing = {}) {
+  return {
+    enabled: existing.enabled ?? false,
+    scheduleTime: existing.scheduleTime || '08:00',
+    exportFolderPath: existing.exportFolderPath || '',
+    exportFormat: existing.exportFormat || 'pdf',
+    syncBeforeExport: existing.syncBeforeExport ?? true,
+    useCurrentDateAsEndDate: existing.useCurrentDateAsEndDate ?? false,
+    emailAfterExport: existing.emailAfterExport ?? false,
+    emailTo: existing.emailTo || '',
+    emailCc: existing.emailCc || '',
+    emailSubject: existing.emailSubject || '',
+    emailBody: existing.emailBody || '',
+    emailAttachFile: existing.emailAttachFile ?? true,
+    lastRunAt: existing.lastRunAt || '',
+    lastRunStatus: existing.lastRunStatus || '',
+    lastRunMessage: existing.lastRunMessage || '',
+    lastOutputPath: existing.lastOutputPath || '',
+    exportRoot: existing.exportRoot || '',
+    automationZone: existing.automationZone || 'Asia/Dubai',
+    mailFrom: existing.mailFrom || 'no-reply@modum.local',
+  }
+}
+
+function buildReportPayload(draft, selectedProject) {
+  const issueStatuses = uniqueValues([...(draft.issueStatuses || []), ...collectSectionSelections(draft, 'issues', 'issueStatuses')])
+  const checklistStatuses = uniqueValues([...(draft.checklistStatuses || []), ...collectSectionSelections(draft, 'checklists', 'checklistStatuses')])
+  const equipmentTypes = uniqueValues([...(draft.equipmentTypes || []), ...collectSectionSelections(draft, 'equipment', 'equipmentTypes')])
+  const summaryText = findSectionNarrative(draft, 'summary', draft.summaryText)
+  const customSectionText = findSectionNarrative(draft, 'custom', draft.customSectionText)
+  const safetyNotes = findSectionNarrative(draft, 'safety', draft.safetyNotes)
+  const commercialNotes = findSectionNarrative(draft, 'commercials', draft.commercialNotes)
+  const progressPhotosText = findSectionNarrative(draft, 'progressphotos', draft.progressPhotosText)
+
+  return {
+    projectId: selectedProject.externalId,
+    title: draft.name,
+    reportType: draft.reportType,
+    dateFrom: draft.dateFrom,
+    dateTo: draft.dateTo,
+    sections: draft.sections,
+    sectionSettings: draft.sectionSettings,
+    issueStatuses,
+    checklistStatuses,
+    equipmentTypes,
+    summaryText,
+    safetyNotes,
+    commercialNotes,
+    customSectionText,
+    progressPhotosText,
+    projectDescription: draft.projectDescription,
+    clientName: draft.clientName,
+    projectCode: draft.projectCode,
+    shiftWindow: draft.shiftWindow,
+    reportAuthor: draft.reportAuthor,
+    peopleOnSite: draft.peopleOnSite,
+    logoLeft: draft.logoLeft,
+    logoRight: draft.logoRight,
+  }
+}
+
 function downloadBlob(blob, fileName) {
   const url = URL.createObjectURL(blob)
   const link = document.createElement('a')
@@ -832,8 +893,11 @@ export default function ReportsPage() {
   const [options, setOptions] = useState({ issueStatuses: [], checklistStatuses: [], equipmentTypes: [] })
   const [savedReports, setSavedReports] = useState([])
   const [previewReport, setPreviewReport] = useState(null)
+  const [automationSettings, setAutomationSettings] = useState(defaultAutomationSettings())
   const [loading, setLoading] = useState(false)
   const [generating, setGenerating] = useState(false)
+  const [savingAutomation, setSavingAutomation] = useState(false)
+  const [runningAutomation, setRunningAutomation] = useState(false)
   const [downloadingId, setDownloadingId] = useState(null)
   const [dragPayload, setDragPayload] = useState(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -860,10 +924,15 @@ export default function ReportsPage() {
     async function loadReportData() {
       setLoading(true)
       try {
-        const [optionsResponse, reportsResponse] = await Promise.all([reportsApi.getOptions(activeProject.externalId), reportsApi.getAll(activeProject.externalId)])
+        const [optionsResponse, reportsResponse, automationResponse] = await Promise.all([
+          reportsApi.getOptions(activeProject.externalId),
+          reportsApi.getAll(activeProject.externalId),
+          reportsApi.getAutomationSettings(activeProject.externalId),
+        ])
         if (ignore) return
         setOptions(optionsResponse.data.data || { issueStatuses: [], checklistStatuses: [], equipmentTypes: [] })
         setSavedReports(reportsResponse.data.data || [])
+        setAutomationSettings(defaultAutomationSettings(automationResponse.data.data || {}))
       } catch (error) {
         if (!ignore) toast.error(error.response?.data?.message || 'Failed to load report workspace data')
       } finally {
@@ -891,6 +960,7 @@ export default function ReportsPage() {
   const currentEditingSettings = currentEditingSectionId ? defaultSectionSettings(currentEditingSectionId, draft.sectionSettings?.[editingSectionIndex]) : null
 
   function updateDraft(field, value) { setDraft(current => ({ ...current, [field]: value })) }
+  function updateAutomation(field, value) { setAutomationSettings(current => ({ ...current, [field]: value })) }
   function handleLogoUpload(field, event) {
     const file = event.target.files?.[0]
     if (!file) return
@@ -982,42 +1052,9 @@ export default function ReportsPage() {
     if (!draft.name.trim()) return toast.error('Add a template name before generating')
     if (!draft.sections.length) return toast.error('Add at least one report section')
 
-    const issueStatuses = uniqueValues([...(draft.issueStatuses || []), ...collectSectionSelections(draft, 'issues', 'issueStatuses')])
-    const checklistStatuses = uniqueValues([...(draft.checklistStatuses || []), ...collectSectionSelections(draft, 'checklists', 'checklistStatuses')])
-    const equipmentTypes = uniqueValues([...(draft.equipmentTypes || []), ...collectSectionSelections(draft, 'equipment', 'equipmentTypes')])
-    const summaryText = findSectionNarrative(draft, 'summary', draft.summaryText)
-    const customSectionText = findSectionNarrative(draft, 'custom', draft.customSectionText)
-    const safetyNotes = findSectionNarrative(draft, 'safety', draft.safetyNotes)
-    const commercialNotes = findSectionNarrative(draft, 'commercials', draft.commercialNotes)
-    const progressPhotosText = findSectionNarrative(draft, 'progressphotos', draft.progressPhotosText)
-
     setGenerating(true)
     try {
-      const response = await reportsApi.generate({
-        projectId: selectedProject.externalId,
-        title: draft.name,
-        reportType: draft.reportType,
-        dateFrom: draft.dateFrom,
-        dateTo: draft.dateTo,
-        sections: draft.sections,
-        sectionSettings: draft.sectionSettings,
-        issueStatuses,
-        checklistStatuses,
-        equipmentTypes,
-        summaryText,
-        safetyNotes,
-        commercialNotes,
-        customSectionText,
-        progressPhotosText,
-        projectDescription: draft.projectDescription,
-        clientName: draft.clientName,
-        projectCode: draft.projectCode,
-        shiftWindow: draft.shiftWindow,
-        reportAuthor: draft.reportAuthor,
-        peopleOnSite: draft.peopleOnSite,
-        logoLeft: draft.logoLeft,
-        logoRight: draft.logoRight,
-      })
+      const response = await reportsApi.generate(buildReportPayload(draft, selectedProject))
       const report = response.data.data
       setPreviewReport(report)
       setSavedReports(current => [report, ...current.filter(item => item.id !== report.id)])
@@ -1027,6 +1064,76 @@ export default function ReportsPage() {
       toast.error(error.response?.data?.message || 'Failed to generate report')
     } finally {
       setGenerating(false)
+    }
+  }
+
+  async function handleSaveAutomation() {
+    if (!selectedProject?.externalId) return toast.error('Select a project before saving report automation')
+    if (!draft.name.trim()) return toast.error('Add a template name before saving report automation')
+    if (!draft.sections.length) return toast.error('Add at least one report section')
+    if (automationSettings.emailAfterExport && !automationSettings.emailTo.trim()) return toast.error('Add at least one email recipient before enabling post-export email')
+
+    setSavingAutomation(true)
+    try {
+      const response = await reportsApi.saveAutomationSettings({
+        ...buildReportPayload(draft, selectedProject),
+        enabled: automationSettings.enabled,
+        scheduleTime: automationSettings.scheduleTime,
+        exportFolderPath: automationSettings.exportFolderPath,
+        exportFormat: automationSettings.exportFormat,
+        syncBeforeExport: automationSettings.syncBeforeExport,
+        useCurrentDateAsEndDate: automationSettings.useCurrentDateAsEndDate,
+        emailAfterExport: automationSettings.emailAfterExport,
+        emailTo: automationSettings.emailTo,
+        emailCc: automationSettings.emailCc,
+        emailSubject: automationSettings.emailSubject,
+        emailBody: automationSettings.emailBody,
+        emailAttachFile: automationSettings.emailAttachFile,
+      })
+      setAutomationSettings(defaultAutomationSettings(response.data.data || {}))
+      if (automationSettings.enabled) {
+        toast.success('Scheduled export settings saved and automation is enabled')
+      } else {
+        toast.success('Automation settings saved, but scheduled export is still disabled')
+      }
+    } catch (error) {
+      toast.error(error.response?.data?.message || 'Failed to save scheduled export settings')
+    } finally {
+      setSavingAutomation(false)
+    }
+  }
+
+  async function handleRunAutomationNow() {
+    if (!selectedProject?.externalId) return toast.error('Select a project before exporting')
+    if (!draft.name.trim()) return toast.error('Add a template name before exporting')
+    if (!draft.sections.length) return toast.error('Add at least one report section')
+    if (automationSettings.emailAfterExport && !automationSettings.emailTo.trim()) return toast.error('Add at least one email recipient before enabling post-export email')
+
+    setRunningAutomation(true)
+    try {
+      const response = await reportsApi.runAutomationNow({
+        ...buildReportPayload(draft, selectedProject),
+        enabled: automationSettings.enabled,
+        scheduleTime: automationSettings.scheduleTime,
+        exportFolderPath: automationSettings.exportFolderPath,
+        exportFormat: automationSettings.exportFormat,
+        syncBeforeExport: automationSettings.syncBeforeExport,
+        useCurrentDateAsEndDate: automationSettings.useCurrentDateAsEndDate,
+        emailAfterExport: automationSettings.emailAfterExport,
+        emailTo: automationSettings.emailTo,
+        emailCc: automationSettings.emailCc,
+        emailSubject: automationSettings.emailSubject,
+        emailBody: automationSettings.emailBody,
+        emailAttachFile: automationSettings.emailAttachFile,
+      })
+      setAutomationSettings(defaultAutomationSettings(response.data.data || {}))
+      const savedTo = response.data.data?.savedTo
+      const emailNote = response.data.data?.emailSent ? ' and emailed' : ''
+      toast.success(savedTo ? `Export saved to ${savedTo}${emailNote}` : `Scheduled export completed${emailNote}`)
+    } catch (error) {
+      toast.error(error.response?.data?.message || 'Failed to run scheduled export')
+    } finally {
+      setRunningAutomation(false)
     }
   }
 
@@ -1320,7 +1427,144 @@ export default function ReportsPage() {
           <ModalField label="Project / site notes">
             <textarea value={draft.projectDescription} onChange={event => updateDraft('projectDescription', event.target.value)} placeholder="Project context, shift window, or other report-level notes." style={{ width: '100%', minHeight: 90, padding: '12px 12px', borderRadius: 12, background: 'var(--bg-base)', border: '1px solid var(--border)', color: 'var(--text-primary)', fontSize: 12, resize: 'vertical' }} />
           </ModalField>
+          <div style={{ borderTop: '1px solid rgba(148,163,184,0.10)', paddingTop: 14, display: 'grid', gap: 14 }}>
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 800, color: 'var(--text-primary)' }}>Scheduled export</div>
+              <div style={{ fontSize: 11, color: '#64748b', marginTop: 4, lineHeight: 1.6 }}>
+                The backend can sync the project first, generate the report, save the export file, and optionally email it from the machine running the backend or VM.
+              </div>
+            </div>
+            <ModalField label="Automation">
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <TogglePill active={automationSettings.enabled} onClick={() => updateAutomation('enabled', !automationSettings.enabled)}>
+                  {automationSettings.enabled ? 'Enabled' : 'Disabled'}
+                </TogglePill>
+                <TogglePill active={automationSettings.syncBeforeExport} onClick={() => updateAutomation('syncBeforeExport', !automationSettings.syncBeforeExport)}>
+                  Sync before export
+                </TogglePill>
+                <TogglePill active={automationSettings.useCurrentDateAsEndDate} onClick={() => updateAutomation('useCurrentDateAsEndDate', !automationSettings.useCurrentDateAsEndDate)}>
+                  Use current date as end date
+                </TogglePill>
+                <TogglePill active={automationSettings.emailAfterExport} onClick={() => updateAutomation('emailAfterExport', !automationSettings.emailAfterExport)}>
+                  Email after export
+                </TogglePill>
+                <TogglePill active={automationSettings.emailAttachFile} onClick={() => updateAutomation('emailAttachFile', !automationSettings.emailAttachFile)}>
+                  Attach exported file
+                </TogglePill>
+              </div>
+              {!automationSettings.enabled && (
+                <div
+                  style={{
+                    marginTop: 10,
+                    padding: '10px 12px',
+                    borderRadius: 12,
+                    background: 'rgba(245, 158, 11, 0.12)',
+                    border: '1px solid rgba(245, 158, 11, 0.25)',
+                    color: '#fcd34d',
+                    fontSize: 12,
+                    lineHeight: 1.6,
+                    fontWeight: 600,
+                  }}
+                >
+                  Scheduled export is currently disabled. The time, folder, and email settings will save, but nothing will run automatically until you switch <span style={{ color: '#fde68a', fontWeight: 800 }}>Enabled</span> on.
+                </div>
+              )}
+            </ModalField>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 12 }}>
+              <ModalField label="Daily export time">
+                <input
+                  type="time"
+                  value={automationSettings.scheduleTime}
+                  onChange={event => updateAutomation('scheduleTime', event.target.value)}
+                  style={{ width: '100%', padding: '10px 12px', borderRadius: 12, background: 'var(--bg-base)', border: '1px solid var(--border)', color: 'var(--text-primary)', fontSize: 12 }}
+                />
+              </ModalField>
+              <ModalField label="Export format">
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  {['pdf', 'csv', 'json'].map(format => (
+                    <TogglePill key={format} active={automationSettings.exportFormat === format} onClick={() => updateAutomation('exportFormat', format)}>
+                      {format.toUpperCase()}
+                    </TogglePill>
+                  ))}
+                </div>
+              </ModalField>
+            </div>
+            {automationSettings.useCurrentDateAsEndDate && (
+              <div
+                style={{
+                  padding: '10px 12px',
+                  borderRadius: 12,
+                  background: 'rgba(56, 189, 248, 0.10)',
+                  border: '1px solid rgba(56, 189, 248, 0.22)',
+                  color: '#bae6fd',
+                  fontSize: 12,
+                  lineHeight: 1.6,
+                }}
+              >
+                Scheduled exports will keep the saved <span style={{ fontWeight: 800 }}>start date</span> and automatically replace the <span style={{ fontWeight: 800 }}>report end date</span> with the current Dubai date at runtime for daily updates.
+              </div>
+            )}
+            <ModalField label="Folder location" hint={`Relative folders go under ${automationSettings.exportRoot || '/tmp/report-exports'}. Use this for Docker-safe exports on localhost and the VM.`}>
+              <input
+                value={automationSettings.exportFolderPath}
+                onChange={event => updateAutomation('exportFolderPath', event.target.value)}
+                placeholder="reports/qaj01-pod1"
+                style={{ width: '100%', padding: '10px 12px', borderRadius: 12, background: 'var(--bg-base)', border: '1px solid var(--border)', color: 'var(--text-primary)', fontSize: 12 }}
+              />
+            </ModalField>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 12 }}>
+              <ModalField label="Email to" hint="Comma, semicolon, or new-line separated recipients.">
+                <textarea
+                  value={automationSettings.emailTo}
+                  onChange={event => updateAutomation('emailTo', event.target.value)}
+                  placeholder="pm@modum.me, reports@modum.me"
+                  style={{ width: '100%', minHeight: 72, padding: '12px 12px', borderRadius: 12, background: 'var(--bg-base)', border: '1px solid var(--border)', color: 'var(--text-primary)', fontSize: 12, resize: 'vertical' }}
+                />
+              </ModalField>
+              <ModalField label="Email cc" hint="Optional extra recipients.">
+                <textarea
+                  value={automationSettings.emailCc}
+                  onChange={event => updateAutomation('emailCc', event.target.value)}
+                  placeholder="director@modum.me"
+                  style={{ width: '100%', minHeight: 72, padding: '12px 12px', borderRadius: 12, background: 'var(--bg-base)', border: '1px solid var(--border)', color: 'var(--text-primary)', fontSize: 12, resize: 'vertical' }}
+                />
+              </ModalField>
+            </div>
+            <ModalField label="Email subject" hint={`Email sender uses ${automationSettings.mailFrom || 'the configured SMTP sender'} when SMTP is configured on the VM.`}>
+              <input
+                value={automationSettings.emailSubject}
+                onChange={event => updateAutomation('emailSubject', event.target.value)}
+                placeholder={`${draft.name || 'Report'} export is ready`}
+                style={{ width: '100%', padding: '10px 12px', borderRadius: 12, background: 'var(--bg-base)', border: '1px solid var(--border)', color: 'var(--text-primary)', fontSize: 12 }}
+              />
+            </ModalField>
+            <ModalField label="Email message" hint="Leave blank if you want to type and manage the email message manually later. Blank stays blank.">
+              <textarea
+                value={automationSettings.emailBody}
+                onChange={event => updateAutomation('emailBody', event.target.value)}
+                placeholder=""
+                style={{ width: '100%', minHeight: 90, padding: '12px 12px', borderRadius: 12, background: 'var(--bg-base)', border: '1px solid var(--border)', color: 'var(--text-primary)', fontSize: 12, resize: 'vertical' }}
+              />
+            </ModalField>
+            <SurfaceCard style={{ padding: 14, background: 'var(--bg-base)' }}>
+              <div style={{ display: 'grid', gap: 6 }}>
+                <div style={{ fontSize: 11, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Last automation run</div>
+                <div style={{ fontSize: 12, color: 'var(--text-primary)', fontWeight: 700 }}>
+                  {automationSettings.lastRunAt ? formatDate(automationSettings.lastRunAt) : 'No export has run yet'}
+                </div>
+                {automationSettings.lastRunStatus ? <div style={{ fontSize: 12, color: '#cbd5e1' }}>Status: {automationSettings.lastRunStatus}</div> : null}
+                {automationSettings.lastRunMessage ? <div style={{ fontSize: 12, color: '#94a3b8', lineHeight: 1.6 }}>{automationSettings.lastRunMessage}</div> : null}
+                {automationSettings.lastOutputPath ? <div style={{ fontSize: 12, color: '#7dd3fc', lineHeight: 1.6 }}>Last file: {automationSettings.lastOutputPath}</div> : null}
+              </div>
+            </SurfaceCard>
+          </div>
           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
+            <Button variant="secondary" icon={FolderOpen} onClick={handleRunAutomationNow} disabled={runningAutomation}>
+              {runningAutomation ? 'Exporting...' : 'Run export now'}
+            </Button>
+            <Button variant="primary" icon={Save} onClick={handleSaveAutomation} disabled={savingAutomation}>
+              {savingAutomation ? 'Saving...' : 'Save automation'}
+            </Button>
             <Button variant="secondary" onClick={() => setSettingsOpen(false)}>Close</Button>
           </div>
         </div>

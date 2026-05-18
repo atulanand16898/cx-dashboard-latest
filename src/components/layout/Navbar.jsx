@@ -50,8 +50,8 @@ const PRIMARY_TABS = [
   { label: 'Planned vs Actual', to: '/planned-vs-actual', icon: BarChart3 },
   { label: 'Checklists Flow', to: '/asset-readiness', icon: ClipboardList },
   { label: 'Issue Radar', to: '/issue-radar', icon: Radar },
-  { label: 'AI Copilot', to: '/ai-copilot', icon: Bot },
-  { label: 'Reports', to: '/reports', icon: FileBarChart2 },
+  { label: 'AI Copilot', to: '/ai-copilot', icon: Bot, adminOnly: true },
+  { label: 'Reports', to: '/reports', icon: FileBarChart2, adminOnly: true },
   { label: 'Project Access', to: '/project-access', icon: Briefcase, adminOnly: true },
 ]
 
@@ -255,7 +255,7 @@ function ActionIconButton({ icon: Icon, label, onClick, active, disabled, accent
 }
 
 export default function Navbar() {
-  const { logout, isAdmin, provider } = useAuth()
+  const { logout, isAdmin, provider, user } = useAuth()
   const { isDark, toggleTheme } = useTheme()
   const {
     activeProject,
@@ -291,6 +291,8 @@ export default function Navbar() {
   const secondaryLine = isPrimavera
     ? [primaryProject?.projectCode, primaryProject?.status].filter(Boolean).join(' | ')
     : [primaryProject?.client, primaryProject?.location].filter(Boolean).join(' | ')
+  const currentUserLabel = user?.username || 'Unknown user'
+  const currentUserRole = isAdmin ? 'Admin' : 'User'
 
   const filteredProjects = useMemo(
     () => projects.filter((project) =>
@@ -513,6 +515,22 @@ export default function Navbar() {
           </nav>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <div
+              style={{
+                display: 'inline-flex',
+                flexDirection: 'column',
+                alignItems: 'flex-end',
+                gap: 2,
+                padding: '8px 12px',
+                borderRadius: 12,
+                border: '1px solid rgba(255,255,255,0.08)',
+                background: 'rgba(255,255,255,0.03)',
+              }}
+            >
+              <div style={{ fontSize: 10, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.12em' }}>Signed In</div>
+              <div style={{ fontSize: 12, color: '#e2e8f0', fontWeight: 800 }}>{currentUserLabel}</div>
+              <div style={{ fontSize: 10, color: '#7f8ea8' }}>{currentUserRole}</div>
+            </div>
             <ActionIconButton
               icon={isDark ? Sun : Moon}
               label={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
@@ -941,6 +959,22 @@ export default function Navbar() {
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
+          <div
+            style={{
+              display: 'inline-flex',
+              flexDirection: 'column',
+              alignItems: 'flex-end',
+              gap: 2,
+              padding: '8px 12px',
+              borderRadius: 14,
+              border: '1px solid rgba(255,255,255,0.08)',
+              background: 'rgba(255,255,255,0.03)',
+            }}
+          >
+            <div style={{ fontSize: 10, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.12em' }}>Signed In</div>
+            <div style={{ fontSize: 12, color: '#dbe7fb', fontWeight: 800 }}>{currentUserLabel}</div>
+            <div style={{ fontSize: 10, color: '#7f8ea8' }}>{currentUserRole}</div>
+          </div>
           <div style={{ textAlign: 'right', marginRight: 4 }}>
             <div style={{ fontSize: 10, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.12em' }}>Last Updated</div>
             <div style={{ fontSize: 12, color: '#dbe7fb', fontWeight: 700 }}>{formatDateTime(lastUpdatedAt)}</div>

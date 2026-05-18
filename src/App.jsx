@@ -86,11 +86,27 @@ export default function App() {
               <Route path="/tracker-pulse" element={<TrackerPulsePage />} />
               <Route path="/checklist-flow" element={<Navigate to="/asset-readiness" replace />} />
               <Route path="/issue-radar" element={<IssueRadarPage />} />
-              <Route path="/ai-copilot" element={<AICopilotPage />} />
+              <Route path="/ai-copilot" element={
+                <ProtectedRoute adminOnly>
+                  <AICopilotPage />
+                </ProtectedRoute>
+              } />
               <Route path="/asset-readiness" element={<AssetReadinessPage />} />
-              <Route path="/reports" element={<ReportsPage />} />
-              <Route path="/tracker-briefs" element={<ReportsPage />} />
-              <Route path="/project-access" element={<ProjectAccessPage />} />
+              <Route path="/reports" element={
+                <ProtectedRoute adminOnly>
+                  <ReportsPage />
+                </ProtectedRoute>
+              } />
+              <Route path="/tracker-briefs" element={
+                <ProtectedRoute adminOnly>
+                  <ReportsPage />
+                </ProtectedRoute>
+              } />
+              <Route path="/project-access" element={
+                <ProtectedRoute adminOnly>
+                  <ProjectAccessPage />
+                </ProtectedRoute>
+              } />
             </Route>
 
             <Route path="*" element={<Navigate to="/" replace />} />

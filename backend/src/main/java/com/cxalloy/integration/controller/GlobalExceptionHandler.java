@@ -46,6 +46,17 @@ public class GlobalExceptionHandler {
             .body(ApiResponse.error(ex.getReason() != null ? ex.getReason() : "Request failed"));
     }
 
+    @ExceptionHandler(IllegalStateException.class)
+    public ResponseEntity<ApiResponse<Void>> handleIllegalStateException(IllegalStateException ex) {
+        logger.error("Illegal state: {}", ex.getMessage());
+        String message = ex.getMessage() == null ? "Request failed" : ex.getMessage();
+        String normalized = message.toLowerCase();
+        HttpStatus status = (normalized.contains("admin access is required") || normalized.contains("do not have access"))
+                ? HttpStatus.FORBIDDEN
+                : HttpStatus.INTERNAL_SERVER_ERROR;
+        return ResponseEntity.status(status).body(ApiResponse.error(message));
+    }
+
     @ExceptionHandler(RuntimeException.class)
     public ResponseEntity<ApiResponse<Void>> handleRuntimeException(RuntimeException ex) {
         logger.error("Runtime error: {}", ex.getMessage());

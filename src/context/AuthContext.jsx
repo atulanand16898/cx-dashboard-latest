@@ -49,7 +49,7 @@ export function AuthProvider({ children }) {
     if (authenticatedProvider) {
       setProvider(authenticatedProvider)
     }
-    await refreshUser()
+    return await refreshUser()
   }
 
   const logout = async () => {
