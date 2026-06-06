@@ -182,7 +182,7 @@ function EquipmentRow({ row, idx }) {
   const unassigned = !row.status || row.status === 'Not Assigned'
   const statusColor = fullyClosed ? C.approved : unassigned ? C.muted : C.progress
   const statusBg = fullyClosed ? 'rgba(34,197,94,0.12)' : unassigned ? 'rgba(100,116,139,0.18)' : 'rgba(234,179,8,0.12)'
-  const detailParts = [row.systemName, row.spaceName, row.assignedTo]
+  const detailParts = [row.__sourceProjectName, row.systemName, row.spaceName, row.assignedTo]
     .map(value => String(value || '').trim())
     .filter(Boolean)
   const uniqueDetailParts = detailParts.filter((value, index) => detailParts.indexOf(value) === index)

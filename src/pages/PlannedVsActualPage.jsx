@@ -787,6 +787,7 @@ export default function PlannedVsActualPage() {
   const { selectedProjects, activeProject } = useProject()
   const targets = selectedProjects.length > 0 ? selectedProjects : (activeProject ? [activeProject] : [])
   const primaryProjectId = activeProject?.externalId || targets[0]?.externalId || null
+  const baselineScopeKey = targets.map((project) => project.externalId || project.id).filter(Boolean).join('__') || primaryProjectId || 'selection'
   const refreshSignal = useSyncRefreshSignal(targets.map((project) => project.externalId || project.id))
 
   const [loading,    setLoading]    = useState(false)
@@ -814,8 +815,8 @@ export default function PlannedVsActualPage() {
       if (!rows.length) { toast.error('No valid rows found in file'); return }
       const nextBaseline = { rows, fileName: file.name, count: rows.length, uploadedAt: new Date().toISOString() }
       setPlanBaseline(nextBaseline)
-      if (primaryProjectId) {
-        localStorage.setItem(getPlanStorageKey(primaryProjectId), JSON.stringify(nextBaseline))
+      if (baselineScopeKey) {
+        localStorage.setItem(getPlanStorageKey(baselineScopeKey), JSON.stringify(nextBaseline))
       }
       toast.success(`Plan baseline loaded: ${rows.length} items from "${file.name}"`)
     } catch (err) {
@@ -827,8 +828,8 @@ export default function PlannedVsActualPage() {
 
   const clearPlanBaseline = () => {
     setPlanBaseline(null)
-    if (primaryProjectId) {
-      localStorage.removeItem(getPlanStorageKey(primaryProjectId))
+    if (baselineScopeKey) {
+      localStorage.removeItem(getPlanStorageKey(baselineScopeKey))
     }
     toast.success('Plan baseline cleared')
   }
@@ -854,17 +855,17 @@ export default function PlannedVsActualPage() {
   useEffect(() => { loadData() }, [targets.map(p => p.externalId).join(','), refreshSignal])
 
   useEffect(() => {
-    if (!primaryProjectId) {
+    if (!baselineScopeKey) {
       setPlanBaseline(null)
       return
     }
     try {
-      const saved = localStorage.getItem(getPlanStorageKey(primaryProjectId))
+      const saved = localStorage.getItem(getPlanStorageKey(baselineScopeKey))
       setPlanBaseline(saved ? JSON.parse(saved) : null)
     } catch {
       setPlanBaseline(null)
     }
-  }, [primaryProjectId])
+  }, [baselineScopeKey])
 
   const handleRefresh = async () => {
     setRefreshing(true)
@@ -895,6 +896,22 @@ export default function PlannedVsActualPage() {
 
   const actualSeriesColor = chartTag === 'all' ? '#22c55e' : TAG_COLORS[chartTag]?.dot || '#22c55e'
   const actualSeriesTextColor = chartTag === 'all' ? '#4ade80' : TAG_COLORS[chartTag]?.text || '#4ade80'
+  const sCurveLeftAxisMax = useMemo(() => {
+    const peakValue = sCurveData.reduce(
+      (max, point) => Math.max(max, point.planTotal || 0, point.actualTotal || 0),
+      0
+    )
+    if (peakValue <= 0) return 1
+    return Math.max(4, Math.ceil(peakValue * 1.12))
+  }, [sCurveData])
+  const sCurveRightAxisMax = useMemo(() => {
+    const peakValue = sCurveData.reduce(
+      (max, point) => Math.max(max, point.cumTarget || 0, point.cumActual || 0),
+      0
+    )
+    if (peakValue <= 0) return 1
+    return Math.max(4, Math.ceil(peakValue * 1.08))
+  }, [sCurveData])
 
   if (!targets.length) {
     return (
@@ -1110,8 +1127,8 @@ export default function PlannedVsActualPage() {
             </div>
 
             {sCurveData.length > 0 ? (
-              <ResponsiveContainer width="100%" height={320}>
-                <ComposedChart data={sCurveData} margin={{ top: 8, right: 36, bottom: 8, left: 0 }}>
+              <ResponsiveContainer width="100%" height={340}>
+                <ComposedChart data={sCurveData} margin={{ top: 28, right: 36, bottom: 28, left: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="var(--divider)" />
                   <XAxis
                     dataKey="label"
@@ -1120,8 +1137,23 @@ export default function PlannedVsActualPage() {
                     tickLine={false}
                     interval="preserveStartEnd"
                   />
-                  <YAxis yAxisId="left"  tick={{ fill: '#64748b', fontSize: 10 }} axisLine={false} tickLine={false} />
-                  <YAxis yAxisId="right" orientation="right" tick={{ fill: '#64748b', fontSize: 10 }} axisLine={false} tickLine={false} />
+                  <YAxis
+                    yAxisId="left"
+                    domain={[0, sCurveLeftAxisMax]}
+                    allowDecimals={false}
+                    tick={{ fill: '#64748b', fontSize: 10 }}
+                    axisLine={false}
+                    tickLine={false}
+                  />
+                  <YAxis
+                    yAxisId="right"
+                    orientation="right"
+                    domain={[0, sCurveRightAxisMax]}
+                    allowDecimals={false}
+                    tick={{ fill: '#64748b', fontSize: 10 }}
+                    axisLine={false}
+                    tickLine={false}
+                  />
                   <Tooltip content={<SCurveTooltip />} />
 
                   {chartSeriesMode === 'bar' ? (

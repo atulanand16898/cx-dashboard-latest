@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react'
 import { useProject } from '../../context/ProjectContext'
-import { Search, ChevronDown } from 'lucide-react'
+import { Search, ChevronDown, RefreshCw } from 'lucide-react'
 
 function getWeekLabel() {
   const now = new Date()
@@ -10,7 +10,17 @@ function getWeekLabel() {
 }
 
 export default function ProjectPanel() {
-  const { projects, selectedProjects, toggleProject, clearSelection, activeProject } = useProject()
+  const {
+    fetchProjects,
+    projects,
+    selectedProjects,
+    toggleProject,
+    clearSelection,
+    activeProject,
+    loading: projectsLoading,
+    setActiveProject,
+    isMultiProject,
+  } = useProject()
   const [search, setSearch] = useState('')
   const [open, setOpen] = useState(false)
   const panelRef = useRef(null)
@@ -38,7 +48,7 @@ export default function ProjectPanel() {
 
   // Build display strings for the Work Package area
   const count = selectedProjects.length
-  const primaryProject = selectedProjects[0] || activeProject
+  const primaryProject = activeProject || selectedProjects[0]
   const secondaryLine = count > 1
     ? selectedProjects.slice(0, 2).map(p => p.name).join(', ') + (count > 2 ? ` +${count - 2} more` : '')
     : (primaryProject?.externalId ? `${primaryProject.client || ''} | ${primaryProject.location || ''}`.replace(/^\| /, '').replace(/ \|$/, '') : '')
@@ -152,9 +162,32 @@ export default function ProjectPanel() {
                   padding: '7px 16px', borderBottom: '1px solid var(--border)',
                   fontSize: 11, color: '#64748b',
                 }}>
-                  <span>{projects.length} projects loaded</span>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span>{projects.length} projects loaded</span>
+                    <button
+                      type="button"
+                      onClick={() => fetchProjects().catch(() => {})}
+                      disabled={projectsLoading}
+                      title="Refresh projects"
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        width: 22,
+                        height: 22,
+                        borderRadius: 999,
+                        border: '1px solid var(--border)',
+                        background: 'var(--bg-card)',
+                        color: projectsLoading ? '#38bdf8' : '#94a3b8',
+                        cursor: projectsLoading ? 'wait' : 'pointer',
+                        padding: 0,
+                      }}
+                    >
+                      <RefreshCw size={11} style={projectsLoading ? { animation: 'spin 1s linear infinite' } : undefined} />
+                    </button>
+                  </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                    <span>{count} selected</span>
+                    <span>{count} selected{isMultiProject ? ` • primary ${primaryProject?.name || 'none'}` : ''}</span>
                     {count > 0 && (
                       <button
                         onClick={clearSelection}
@@ -182,6 +215,7 @@ export default function ProjectPanel() {
                   )}
                   {filtered.map(p => {
                     const isSelected = selectedProjects.some(s => s.id === p.id)
+                    const isPrimary = activeProject?.id === p.id
                     const meta = [p.client, p.location, p.status].filter(Boolean).join(' | ')
                     return (
                       <div
@@ -200,11 +234,27 @@ export default function ProjectPanel() {
                         onMouseLeave={e => { if (!isSelected) e.currentTarget.style.background = 'transparent' }}
                       >
                         <div style={{ minWidth: 0 }}>
-                          <div style={{
-                            fontSize: 13, fontWeight: 600,
-                            color: isSelected ? 'var(--text-primary)' : 'var(--text-secondary)',
-                          }}>
-                            {p.name}
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                            <div style={{
+                              fontSize: 13, fontWeight: 600,
+                              color: isSelected ? 'var(--text-primary)' : 'var(--text-secondary)',
+                            }}>
+                              {p.name}
+                            </div>
+                            {isPrimary && (
+                              <span style={{
+                                fontSize: 10,
+                                fontWeight: 800,
+                                letterSpacing: '0.06em',
+                                color: '#dbeafe',
+                                background: 'rgba(59,130,246,0.18)',
+                                border: '1px solid rgba(59,130,246,0.35)',
+                                borderRadius: 999,
+                                padding: '2px 7px',
+                              }}>
+                                PRIMARY
+                              </span>
+                            )}
                           </div>
                           {meta && (
                             <div style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>
@@ -212,21 +262,41 @@ export default function ProjectPanel() {
                             </div>
                           )}
                         </div>
-                        <button
-                          onClick={e => { e.stopPropagation(); toggleProject(p) }}
-                          style={{
-                            fontSize: 11, fontWeight: 700, letterSpacing: '0.04em',
-                            padding: '3px 10px', borderRadius: 5,
-                            border: isSelected ? 'none' : '1px solid var(--border)',
-                            background: isSelected ? 'rgba(14,165,233,0.2)' : 'none',
-                            color: isSelected ? '#38bdf8' : '#64748b',
-                            cursor: 'pointer', flexShrink: 0, marginLeft: 12,
-                            fontFamily: 'inherit',
-                            transition: 'all 0.15s',
-                          }}
-                        >
-                          {isSelected ? 'SELECTED' : 'SELECT'}
-                        </button>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginLeft: 12 }}>
+                          {isSelected && !isPrimary && (
+                            <button
+                              onClick={e => { e.stopPropagation(); setActiveProject(p) }}
+                              style={{
+                                fontSize: 11, fontWeight: 700, letterSpacing: '0.04em',
+                                padding: '3px 10px', borderRadius: 5,
+                                border: '1px solid rgba(59,130,246,0.25)',
+                                background: 'rgba(59,130,246,0.12)',
+                                color: '#93c5fd',
+                                cursor: 'pointer',
+                                flexShrink: 0,
+                                fontFamily: 'inherit',
+                                transition: 'all 0.15s',
+                              }}
+                            >
+                              MAKE PRIMARY
+                            </button>
+                          )}
+                          <button
+                            onClick={e => { e.stopPropagation(); toggleProject(p) }}
+                            style={{
+                              fontSize: 11, fontWeight: 700, letterSpacing: '0.04em',
+                              padding: '3px 10px', borderRadius: 5,
+                              border: isSelected ? 'none' : '1px solid var(--border)',
+                              background: isSelected ? 'rgba(14,165,233,0.2)' : 'none',
+                              color: isSelected ? '#38bdf8' : '#64748b',
+                              cursor: 'pointer', flexShrink: 0,
+                              fontFamily: 'inherit',
+                              transition: 'all 0.15s',
+                            }}
+                          >
+                            {isSelected ? 'REMOVE' : 'ADD'}
+                          </button>
+                        </div>
                       </div>
                     )
                   })}

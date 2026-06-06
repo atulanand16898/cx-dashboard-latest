@@ -253,6 +253,25 @@ export default function SyncPage() {
 
       {tab === 'individual' && (
         <div className="space-y-4">
+          <div className="glass-card p-5">
+            <div className="flex items-center justify-between gap-4 flex-wrap">
+              <div>
+                <div className="text-sm font-700 text-white">All Projects Sync</div>
+                <div className="text-xs text-dark-400 mt-1">
+                  Launch a background sync across every project and every data type without leaving this tab.
+                </div>
+              </div>
+              <button
+                onClick={startFullSync}
+                disabled={syncingAll || syncingProjectsOnlyAll || isRunning}
+                className="btn-primary"
+              >
+                <Play size={14} />
+                {syncingAll || isRunning ? 'Running...' : 'Sync All Projects'}
+              </button>
+            </div>
+          </div>
+
           {/* Per-project sync */}
           {activeProject && (
             <div className="glass-card p-5">

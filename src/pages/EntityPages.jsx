@@ -8,13 +8,15 @@ import { checklistTagDisplayLabel, deriveChecklistTag } from '../utils/checklist
 
 // ─── Tasks ────────────────────────────────────────────────────────────────────
 export function TasksPage() {
-  const { activeProject } = useProject()
+  const { primaryProject, scopeProjects } = useProject()
   return (
     <GenericListPage
       entityType="tasks"
       fetchFn={(pid) => tasksApi.getAll(pid ? { projectId: pid } : {})}
       syncFn={(pid) => tasksApi.sync(pid)}
-      activeProjectId={activeProject?.externalId}
+      primaryProjectId={primaryProject?.externalId}
+      primaryProjectName={primaryProject?.name}
+      targetProjects={scopeProjects}
       emptyIcon={CheckSquare}
       emptyTitle="No Tasks Found"
       emptyDesc="Sync to pull tasks from CxAlloy"
@@ -56,13 +58,15 @@ function formatChecklistStatusLabel(status) {
 }
 
 export function ChecklistsPage() {
-  const { activeProject } = useProject()
+  const { primaryProject, scopeProjects } = useProject()
   return (
     <GenericListPage
       entityType="checklists"
       fetchFn={(pid) => checklistsApi.getAll(pid)}
       syncFn={(pid) => checklistsApi.syncWithStatusDates(pid)}
-      activeProjectId={activeProject?.externalId}
+      primaryProjectId={primaryProject?.externalId}
+      primaryProjectName={primaryProject?.name}
+      targetProjects={scopeProjects}
       emptyIcon={Tag}
       emptyTitle="No Checklists Found"
       emptyDesc="Sync to pull checklists from CxAlloy"
@@ -98,13 +102,15 @@ export function ChecklistsPage() {
 // Dedicated page for CxAlloy GET /equipment — individual equipment records with
 // type, discipline, tag, status, and location hierarchy fields.
 export function EquipmentPage() {
-  const { activeProject } = useProject()
+  const { primaryProject, scopeProjects } = useProject()
   return (
     <GenericListPage
       entityType="equipment"
       fetchFn={(pid) => equipmentApi.getAll(pid)}
       syncFn={(pid) => equipmentApi.sync(pid)}
-      activeProjectId={activeProject?.externalId}
+      primaryProjectId={primaryProject?.externalId}
+      primaryProjectName={primaryProject?.name}
+      targetProjects={scopeProjects}
       emptyIcon={Cpu}
       emptyTitle="No Equipment Found"
       emptyDesc="Sync to pull equipment records from CxAlloy GET /equipment"
@@ -124,13 +130,15 @@ export function EquipmentPage() {
 
 // ─── Assets ───────────────────────────────────────────────────────────────────
 export function AssetsPage() {
-  const { activeProject } = useProject()
+  const { primaryProject, scopeProjects } = useProject()
   return (
     <GenericListPage
       entityType="assets"
       fetchFn={(pid) => assetsApi.getAll(pid ? { projectId: pid } : {})}
       syncFn={(pid) => assetsApi.syncAll(pid)}
-      activeProjectId={activeProject?.externalId}
+      primaryProjectId={primaryProject?.externalId}
+      primaryProjectName={primaryProject?.name}
+      targetProjects={scopeProjects}
       emptyIcon={Server}
       emptyTitle="No Assets Found"
       emptyDesc="Sync to pull equipment, buildings, systems from CxAlloy"
@@ -150,13 +158,15 @@ export function AssetsPage() {
 
 // ─── Persons ──────────────────────────────────────────────────────────────────
 export function PersonsPage() {
-  const { activeProject } = useProject()
+  const { primaryProject, scopeProjects } = useProject()
   return (
     <GenericListPage
       entityType="persons"
       fetchFn={(pid) => personsApi.getAll(pid)}
       syncFn={(pid) => personsApi.sync(pid)}
-      activeProjectId={activeProject?.externalId}
+      primaryProjectId={primaryProject?.externalId}
+      primaryProjectName={primaryProject?.name}
+      targetProjects={scopeProjects}
       emptyIcon={Users}
       emptyTitle="No Personnel Found"
       emptyDesc="Sync to pull personnel data from CxAlloy"
@@ -176,13 +186,15 @@ export function PersonsPage() {
 
 // ─── Companies ────────────────────────────────────────────────────────────────
 export function CompaniesPage() {
-  const { activeProject } = useProject()
+  const { primaryProject, scopeProjects } = useProject()
   return (
     <GenericListPage
       entityType="companies"
       fetchFn={(pid) => companiesApi.getAll(pid)}
       syncFn={(pid) => companiesApi.sync(pid)}
-      activeProjectId={activeProject?.externalId}
+      primaryProjectId={primaryProject?.externalId}
+      primaryProjectName={primaryProject?.name}
+      targetProjects={scopeProjects}
       emptyIcon={Building2}
       emptyTitle="No Companies Found"
       emptyDesc="Sync to pull company data from CxAlloy"
@@ -201,13 +213,15 @@ export function CompaniesPage() {
 
 // ─── Roles ────────────────────────────────────────────────────────────────────
 export function RolesPage() {
-  const { activeProject } = useProject()
+  const { primaryProject, scopeProjects } = useProject()
   return (
     <GenericListPage
       entityType="roles"
       fetchFn={(pid) => rolesApi.getAll(pid)}
       syncFn={(pid) => rolesApi.sync(pid)}
-      activeProjectId={activeProject?.externalId}
+      primaryProjectId={primaryProject?.externalId}
+      primaryProjectName={primaryProject?.name}
+      targetProjects={scopeProjects}
       emptyIcon={UserCog}
       emptyTitle="No Roles Found"
       emptyDesc="Sync to pull roles from CxAlloy"

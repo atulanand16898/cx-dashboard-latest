@@ -260,10 +260,12 @@ export default function Navbar() {
   const {
     activeProject,
     fetchProjects,
+    isMultiProject,
+    loading: projectsLoading,
     projects,
+    scopeProjects,
     selectedProjects,
     setActiveProject,
-    setSelectedProjects,
     toggleProject,
   } = useProject()
   const navigate = useNavigate()
@@ -290,7 +292,9 @@ export default function Navbar() {
   const primaryProject = activeProject || selectedProjects[0] || null
   const secondaryLine = isPrimavera
     ? [primaryProject?.projectCode, primaryProject?.status].filter(Boolean).join(' | ')
-    : [primaryProject?.client, primaryProject?.location].filter(Boolean).join(' | ')
+    : count > 1
+      ? scopeProjects.slice(0, 2).map((project) => project.name).join(', ') + (count > 2 ? ` +${count - 2} more` : '')
+      : [primaryProject?.client, primaryProject?.location].filter(Boolean).join(' | ')
   const currentUserLabel = user?.username || 'Unknown user'
   const currentUserRole = isAdmin ? 'Admin' : 'User'
 
@@ -571,7 +575,6 @@ export default function Navbar() {
                 onChange={(event) => {
                   const nextProject = projects.find((project) => String(project.id) === event.target.value) || null
                   setActiveProject(nextProject)
-                  setSelectedProjects(nextProject ? [nextProject] : [])
                 }}
                 style={{
                   width: '100%',
@@ -789,7 +792,7 @@ export default function Navbar() {
                     Scope
                   </div>
                   <div style={{ fontSize: 15, fontWeight: 800, color: '#f8fafc', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                    {primaryProject?.name || 'Select project'}
+                    {count > 1 ? `${count} projects selected` : (primaryProject?.name || 'Select project')}
                   </div>
                   <div style={{ fontSize: 12, color: '#7f8ea8', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                     {secondaryLine || 'Choose a project to scope the dashboard and sync flow.'}
@@ -849,8 +852,36 @@ export default function Navbar() {
                     color: '#7f8ea8',
                   }}
                 >
-                  <span>{projects.length} projects loaded</span>
-                  <span>{count > 0 ? 'Single-select scope' : 'Pick one project'}</span>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span>{projects.length} projects loaded</span>
+                    <button
+                      type="button"
+                      onClick={() => fetchProjects().catch(() => {})}
+                      disabled={projectsLoading}
+                      title="Refresh projects"
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        width: 24,
+                        height: 24,
+                        borderRadius: 999,
+                        border: '1px solid rgba(255,255,255,0.08)',
+                        background: 'rgba(255,255,255,0.04)',
+                        color: projectsLoading ? '#38bdf8' : '#94a3b8',
+                        cursor: projectsLoading ? 'wait' : 'pointer',
+                        opacity: projectsLoading ? 0.9 : 1,
+                        padding: 0,
+                      }}
+                    >
+                      <RefreshCw size={12} style={projectsLoading ? { animation: 'spin 1s linear infinite' } : undefined} />
+                    </button>
+                  </div>
+                  <span>
+                    {count > 0
+                      ? `${count} selected${isMultiProject ? ` • primary ${primaryProject?.name || 'none'}` : ''}`
+                      : 'Pick one or more projects'}
+                  </span>
                 </div>
 
                 <div style={{ maxHeight: 360, overflowY: 'auto' }}>
@@ -862,16 +893,14 @@ export default function Navbar() {
 
                   {filteredProjects.map((project) => {
                     const selected = selectedProjects.some((item) => item.id === project.id)
+                    const isPrimary = activeProject?.id === project.id
                     const meta = isPrimavera
                       ? [project.projectCode, project.status].filter(Boolean).join(' | ')
                       : [project.client, project.location, project.status].filter(Boolean).join(' | ')
                     return (
                       <div
                         key={project.id}
-                        onClick={() => {
-                          toggleProject(project)
-                          setProjectOpen(false)
-                        }}
+                        onClick={() => toggleProject(project)}
                         style={{
                           display: 'flex',
                           alignItems: 'center',
@@ -885,23 +914,63 @@ export default function Navbar() {
                         }}
                       >
                         <div style={{ minWidth: 0 }}>
-                          <div style={{ fontSize: 13, fontWeight: 700, color: '#f8fafc' }}>{project.name}</div>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                            <div style={{ fontSize: 13, fontWeight: 700, color: '#f8fafc' }}>{project.name}</div>
+                            {isPrimary ? (
+                              <span
+                                style={{
+                                  padding: '3px 8px',
+                                  borderRadius: 999,
+                                  fontSize: 10,
+                                  fontWeight: 800,
+                                  letterSpacing: '0.06em',
+                                  color: '#dbeafe',
+                                  background: 'rgba(59,130,246,0.18)',
+                                  border: '1px solid rgba(59,130,246,0.32)',
+                                }}
+                              >
+                                PRIMARY
+                              </span>
+                            ) : null}
+                          </div>
                           {meta && <div style={{ fontSize: 11, color: '#7f8ea8', marginTop: 2 }}>{meta}</div>}
                         </div>
-                        <span
-                          style={{
-                            flexShrink: 0,
-                            padding: '5px 10px',
-                            borderRadius: 999,
-                            fontSize: 10,
-                            fontWeight: 800,
-                            letterSpacing: '0.06em',
-                            color: selected ? '#38bdf8' : '#94a3b8',
-                            background: selected ? 'rgba(14,165,233,0.18)' : 'rgba(255,255,255,0.04)',
-                          }}
-                        >
-                          {selected ? 'IN SCOPE' : 'SELECT'}
-                        </span>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+                          {selected && !isPrimary ? (
+                            <button
+                              onClick={(event) => {
+                                event.stopPropagation()
+                                setActiveProject(project)
+                              }}
+                              style={{
+                                padding: '5px 10px',
+                                borderRadius: 999,
+                                fontSize: 10,
+                                fontWeight: 800,
+                                letterSpacing: '0.06em',
+                                color: '#93c5fd',
+                                background: 'rgba(59,130,246,0.12)',
+                                border: '1px solid rgba(59,130,246,0.28)',
+                                cursor: 'pointer',
+                              }}
+                            >
+                              MAKE PRIMARY
+                            </button>
+                          ) : null}
+                          <span
+                            style={{
+                              padding: '5px 10px',
+                              borderRadius: 999,
+                              fontSize: 10,
+                              fontWeight: 800,
+                              letterSpacing: '0.06em',
+                              color: selected ? '#38bdf8' : '#94a3b8',
+                              background: selected ? 'rgba(14,165,233,0.18)' : 'rgba(255,255,255,0.04)',
+                            }}
+                          >
+                            {selected ? 'IN SCOPE' : 'ADD'}
+                          </span>
+                        </div>
                       </div>
                     )
                   })}
@@ -930,10 +999,10 @@ export default function Navbar() {
                 transition: 'all 0.18s ease',
                 boxShadow: syncRunning ? '0 10px 24px rgba(14,165,233,0.18)' : '0 10px 24px rgba(37,99,235,0.14)',
               }}
-              title={activeProject ? `Sync ${activeProject.name}` : 'Select a project first'}
+              title={activeProject ? `${isMultiProject ? 'Sync primary project' : 'Sync project'} ${activeProject.name}` : 'Select a project first'}
             >
               <RefreshCw size={15} style={syncRunning ? { animation: 'spin 1s linear infinite' } : undefined} />
-              {syncRunning ? 'Syncing Scope...' : 'Sync Scope'}
+              {syncRunning ? 'Syncing...' : isMultiProject ? 'Sync Primary' : 'Sync Scope'}
             </button>
             <div
               style={{
@@ -953,6 +1022,12 @@ export default function Navbar() {
               <span>{dateStr}</span>
               <span style={{ color: '#5e718f' }}>•</span>
               <span>{getWeekLabel()}</span>
+              {scopeProjects.length > 1 ? (
+                <>
+                  <span style={{ color: '#5e718f' }}>•</span>
+                  <span>{scopeProjects.length} projects in scope</span>
+                </>
+              ) : null}
             </div>
 
           </div>

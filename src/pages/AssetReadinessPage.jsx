@@ -105,6 +105,23 @@ function matchChecklistToEquipment(checklist, lookup) {
   return null
 }
 
+function mergeEquipmentMatrices(results) {
+  const rows = results.flatMap(({ matrix, project }) =>
+    (matrix?.rows || []).map((row) => ({
+      ...row,
+      __sourceProjectName: project?.name || '',
+      __sourceProjectExternalId: project?.externalId || '',
+    }))
+  )
+
+  return {
+    rows,
+    totalUnits: rows.length,
+    totalSystems: new Set(rows.map((row) => row.systemName).filter(Boolean)).size,
+    totalTypes: new Set(rows.map((row) => row.equipmentType).filter(Boolean)).size,
+  }
+}
+
 function computeTracker(equipment, checklists) {
   const lookup = buildEquipmentLookup(equipment)
   const grouped = new Map()
@@ -1110,8 +1127,13 @@ export default function AssetReadinessPage() {
 
       setMatrixLoading(true)
       try {
-        const response = await equipmentApi.getMatrix(targets[0].externalId)
-        if (!cancelled) setMatrix(response.data?.data || null)
+        const matrixResults = await Promise.all(
+          targets.map(async (project) => {
+            const response = await equipmentApi.getMatrix(project.externalId)
+            return { matrix: response.data?.data || null, project }
+          })
+        )
+        if (!cancelled) setMatrix(mergeEquipmentMatrices(matrixResults))
       } catch {
         if (!cancelled) setMatrix(null)
       } finally {

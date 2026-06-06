@@ -138,24 +138,30 @@ function ChartTooltip({ active, payload, label }) {
 
 // ─── Main ─────────────────────────────────────────────────────────────────────
 export default function DashboardPage() {
-  const { activeProject, period } = useProject()
-  const refreshSignal = useSyncRefreshSignal(activeProject?.externalId ? [activeProject.externalId] : [])
+  const { period, primaryProject, scopeProjects } = useProject()
+  const scopeProjectIds = scopeProjects.map((project) => project?.externalId || project?.id).filter(Boolean)
+  const refreshSignal = useSyncRefreshSignal(scopeProjectIds)
   const [loading, setLoading] = useState(true)
   const [stats,   setStats]   = useState(null)
 
   useEffect(() => {
-    if (!activeProject) return
+    if (!scopeProjects.length) {
+      setStats(null)
+      setLoading(false)
+      return
+    }
     setLoading(true)
-    const projectId = activeProject.externalId
-    Promise.all([
-      issuesApi.getAll(projectId),
-      tasksApi.getAll({ projectId }),
-      checklistsApi.getAll(projectId),
-    ])
-    .then(([issuesRes, tasksRes, checklistsRes]) => {
-      const issueList    = issuesRes.data?.data    || []
-      const taskList     = tasksRes.data?.data     || []
-      const checkList    = checklistsRes.data?.data || []
+    Promise.all(
+      scopeProjects.map((project) => Promise.all([
+        issuesApi.getAll(project.externalId),
+        tasksApi.getAll({ projectId: project.externalId }),
+        checklistsApi.getAll(project.externalId),
+      ]))
+    )
+    .then((results) => {
+      const issueList = results.flatMap(([issuesRes]) => issuesRes.data?.data || [])
+      const taskList = results.flatMap(([, tasksRes]) => tasksRes.data?.data || [])
+      const checkList = results.flatMap(([, , checklistsRes]) => checklistsRes.data?.data || [])
 
       const CLOSED_STATUSES = new Set(['closed','completed','resolved','done','issue_closed','accepted_by_owner','finished'])
       const openIssues   = issueList.filter(i => !CLOSED_STATUSES.has((i.status || '').toLowerCase().replace(/[ \-]/g, '_')))
@@ -180,7 +186,7 @@ export default function DashboardPage() {
     })
     .catch(() => toast.error('Failed to load dashboard data'))
     .finally(() => setLoading(false))
-  }, [activeProject, refreshSignal])
+  }, [refreshSignal, scopeProjects])
 
   const weeklyData = useMemo(
     () => buildWeeklyData(stats?.issues || [], period),
@@ -192,14 +198,14 @@ export default function DashboardPage() {
     [stats]
   )
 
-  if (!activeProject) {
+  if (!scopeProjects.length) {
     return (
       <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: 300, gap: 12 }}>
         <div style={{ width: 56, height: 56, borderRadius: 16, background: 'var(--bg-card-light)', border: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
           <Activity size={24} color="var(--text-muted)" />
         </div>
         <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--text-primary)' }}>No Project Selected</div>
-        <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>Select a project to view its dashboard</div>
+        <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>Select one or more projects to view the dashboard</div>
       </div>
     )
   }
@@ -214,6 +220,13 @@ export default function DashboardPage() {
   }
 
   const completionRate = stats?.checklistCompletionRate ?? 0
+  const isMultiProject = scopeProjects.length > 1
+  const scopeNames = scopeProjects.slice(0, 3).map((project) => project.name).join(', ')
+  const latestSyncedAt = scopeProjects
+    .map((project) => project?.syncedAt)
+    .filter(Boolean)
+    .sort()
+    .at(-1)
 
   // Chart Y-axis max
   const chartMax = weeklyData.length
@@ -227,19 +240,29 @@ export default function DashboardPage() {
       <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 16, padding: '18px 22px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', boxShadow: 'var(--shadow-card)' }}>
         <div>
           <div style={{ fontSize: 10, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.09em', marginBottom: 4 }}>Active Project</div>
-          <div style={{ fontSize: 18, fontWeight: 800, color: 'var(--text-primary)', marginBottom: 6 }}>{activeProject.name}</div>
+          <div style={{ fontSize: 18, fontWeight: 800, color: 'var(--text-primary)', marginBottom: 6 }}>
+            {isMultiProject ? `${scopeProjects.length} Projects Portfolio` : primaryProject?.name}
+          </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-            <span style={{ fontSize: 11, fontWeight: 600, color: '#0ea5e9', background: 'rgba(14,165,233,0.10)', padding: '2px 9px', borderRadius: 6, fontFamily: 'monospace' }}>
-              {activeProject.externalId}
-            </span>
-            {activeProject.status && <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{activeProject.status}</span>}
-            {activeProject.location && <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>📍 {activeProject.location}</span>}
+            {primaryProject?.externalId ? (
+              <span style={{ fontSize: 11, fontWeight: 600, color: '#0ea5e9', background: 'rgba(14,165,233,0.10)', padding: '2px 9px', borderRadius: 6, fontFamily: 'monospace' }}>
+                {isMultiProject ? `Primary ${primaryProject.externalId}` : primaryProject.externalId}
+              </span>
+            ) : null}
+            {isMultiProject ? (
+              <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{scopeNames}{scopeProjects.length > 3 ? ` +${scopeProjects.length - 3} more` : ''}</span>
+            ) : (
+              <>
+                {primaryProject?.status && <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{primaryProject.status}</span>}
+                {primaryProject?.location && <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>📍 {primaryProject.location}</span>}
+              </>
+            )}
           </div>
         </div>
         <div style={{ textAlign: 'right' }}>
           <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4 }}>Last Synced</div>
           <div style={{ fontSize: 12, color: 'var(--text-secondary)', fontFamily: 'monospace' }}>
-            {activeProject.syncedAt ? new Date(activeProject.syncedAt).toLocaleString() : 'Not yet synced'}
+            {latestSyncedAt ? new Date(latestSyncedAt).toLocaleString() : 'Not yet synced'}
           </div>
         </div>
       </div>

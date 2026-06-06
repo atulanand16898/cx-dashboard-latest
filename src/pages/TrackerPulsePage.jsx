@@ -10,6 +10,7 @@ import { useSyncRefreshSignal } from '../hooks/useSyncRefreshSignal'
 const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
 const SUMMARY_MATRIX_TAG_ORDER = DASHBOARD_CHECKLIST_TAG_ORDER
 const TAG_COLORS_MAP = CHECKLIST_TAG_COLORS
+const MANUAL_FORECAST_STORAGE_PREFIX = 'tracker_pulse_manual_forecast:'
 
 // ── ISO week label ─────────────────────────────────────────────────────────────
 function isoWeekLabel(d) {
@@ -27,6 +28,30 @@ function isoWeekMonday(d) {
   const day = tmp.getUTCDay() || 7   // 1=Mon … 7=Sun
   tmp.setUTCDate(tmp.getUTCDate() - (day - 1))
   return tmp
+}
+
+function getManualForecastStorageKey(scopeKey) {
+  return `${MANUAL_FORECAST_STORAGE_PREFIX}${scopeKey}`
+}
+
+function parseDateInputValue(value) {
+  if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null
+  const [year, month, day] = value.split('-').map(Number)
+  const parsed = new Date(year, month - 1, day)
+  return isNaN(parsed) ? null : parsed
+}
+
+function formatDisplayDate(date) {
+  if (!(date instanceof Date) || isNaN(date)) return 'Not set'
+  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+}
+
+function daysUntilDate(date) {
+  if (!(date instanceof Date) || isNaN(date)) return null
+  const today = new Date()
+  const startOfToday = new Date(today.getFullYear(), today.getMonth(), today.getDate())
+  const targetDay = new Date(date.getFullYear(), date.getMonth(), date.getDate())
+  return Math.ceil((targetDay - startOfToday) / 86400000)
 }
 
 // ── "done" status predicate ────────────────────────────────────────────────────
@@ -564,13 +589,60 @@ function useMultiProjectData() {
 // ── Page ───────────────────────────────────────────────────────────────────────
 export default function TrackerPulsePage() {
   const navigate = useNavigate()
+  const { scopeProjectIds } = useProject()
   const { data, loading } = useMultiProjectData()
   const stats = useMemo(() => computeStats(data.checklists, data.issues, data.tasks), [data])
   const [weeklyProgressMode, setWeeklyProgressMode] = useState('currentWeek')
+  const [manualForecastDate, setManualForecastDate] = useState('')
   const weeklyProgress = useMemo(
     () => buildWeeklyProgressStats(data.checklists, weeklyProgressMode),
     [data.checklists, weeklyProgressMode]
   )
+  const forecastScopeKey = scopeProjectIds.join('__') || 'selection'
+  const weeklyProgressYAxisMax = useMemo(() => {
+    const peakValue = weeklyProgress.dailyData.reduce(
+      (max, entry) => Math.max(max, entry.count || 0, entry.avg || 0),
+      0
+    )
+    if (peakValue <= 0) return 1
+    return Math.max(4, Math.ceil(peakValue * 1.2))
+  }, [weeklyProgress])
+  const manualForecastDateObject = useMemo(
+    () => parseDateInputValue(manualForecastDate),
+    [manualForecastDate]
+  )
+  const displayedForecastDate = manualForecastDateObject || stats?.projectedCompletion || new Date()
+  const displayedForecastLabel = formatDisplayDate(displayedForecastDate)
+  const autoForecastLabel = formatDisplayDate(stats?.projectedCompletion || new Date())
+  const displayedTimeLeft = useMemo(() => {
+    if ((stats?.remaining ?? 0) <= 0) return 'Done'
+    if (!manualForecastDateObject) return `${Math.max(1, Math.ceil(stats?.daysNeeded ?? 0))}d`
+
+    const daysLeft = daysUntilDate(manualForecastDateObject)
+    if (daysLeft == null) return `${Math.max(1, Math.ceil(stats?.daysNeeded ?? 0))}d`
+    if (daysLeft < 0) return `${Math.abs(daysLeft)}d late`
+    if (daysLeft === 0) return 'Today'
+    return `${daysLeft}d`
+  }, [manualForecastDateObject, stats?.daysNeeded, stats?.remaining])
+
+  useEffect(() => {
+    setManualForecastDate(localStorage.getItem(getManualForecastStorageKey(forecastScopeKey)) || '')
+  }, [forecastScopeKey])
+
+  const handleManualForecastChange = (value) => {
+    setManualForecastDate(value)
+    const storageKey = getManualForecastStorageKey(forecastScopeKey)
+    if (value) {
+      localStorage.setItem(storageKey, value)
+    } else {
+      localStorage.removeItem(storageKey)
+    }
+  }
+
+  const clearManualForecastDate = () => {
+    setManualForecastDate('')
+    localStorage.removeItem(getManualForecastStorageKey(forecastScopeKey))
+  }
 
   if (loading) return (
     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: 300, gap: 12 }}>
@@ -745,11 +817,17 @@ export default function TrackerPulsePage() {
             </div>
           </div>
 
-          <ResponsiveContainer width="100%" height={200}>
-            <BarChart data={weeklyProgress.dailyData} margin={{ top: 4, right: 4, bottom: 0, left: -20 }}>
+          <ResponsiveContainer width="100%" height={216}>
+            <BarChart data={weeklyProgress.dailyData} margin={{ top: 24, right: 4, bottom: 0, left: -20 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="var(--divider)" vertical={false} />
               <XAxis dataKey="day" tick={{ fill: 'var(--text-muted)', fontSize: 11 }} axisLine={false} tickLine={false} />
-              <YAxis tick={{ fill: 'var(--text-muted)', fontSize: 10 }} axisLine={false} tickLine={false} />
+              <YAxis
+                domain={[0, weeklyProgressYAxisMax]}
+                allowDecimals={false}
+                tick={{ fill: 'var(--text-muted)', fontSize: 10 }}
+                axisLine={false}
+                tickLine={false}
+              />
               {/* Tooltip shows both bar value AND avg line value — matching modum.me hover */}
               <Tooltip content={<CustomTooltip />} cursor={{ fill: 'var(--divider)', opacity: 0.4 }} />
               {/* Green avg reference line — all-time total / 7 days */}
@@ -758,6 +836,7 @@ export default function TrackerPulsePage() {
                 <LabelList
                   dataKey="count"
                   position="top"
+                  offset={8}
                   formatter={(value) => (value ? value : '')}
                   style={{ fill: '#cbd5e1', fontSize: 10, fontWeight: 700 }}
                 />
@@ -802,14 +881,76 @@ export default function TrackerPulsePage() {
         <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 14, padding: '20px' }}>
           <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 4 }}>Projected Completion</div>
           <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 14 }}>
-            Projected from closed checklists and current closure-date daily run rate
+            Projected from closed checklists and current closure-date daily run rate, with optional manual override
           </div>
 
-          <div style={{ fontSize: 26, fontWeight: 800, color: 'var(--text-primary)', marginBottom: 4 }}>
-            {stats.projectedCompletion.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 4 }}>
+            <div style={{ fontSize: 26, fontWeight: 800, color: 'var(--text-primary)' }}>
+              {displayedForecastLabel}
+            </div>
+            {manualForecastDateObject && (
+              <span style={{
+                padding: '4px 8px',
+                borderRadius: 999,
+                fontSize: 10,
+                fontWeight: 800,
+                letterSpacing: '0.06em',
+                textTransform: 'uppercase',
+                color: '#fde68a',
+                background: 'rgba(250,204,21,0.12)',
+                border: '1px solid rgba(250,204,21,0.24)',
+              }}>
+                Manual Forecast
+              </span>
+            )}
           </div>
-          <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 18 }}>
-            Projected from checklist closure pace.
+          <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12 }}>
+            {manualForecastDateObject
+              ? `Manual override active. Auto forecast from current pace: ${autoForecastLabel}.`
+              : 'Projected from checklist closure pace.'}
+          </div>
+
+          <div style={{ marginBottom: 18 }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 8 }}>
+              <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>
+                Forecast Completion Date
+              </div>
+              {manualForecastDate && (
+                <button
+                  type="button"
+                  onClick={clearManualForecastDate}
+                  style={{
+                    background: 'none',
+                    border: '1px solid var(--border)',
+                    borderRadius: 999,
+                    padding: '4px 10px',
+                    fontSize: 11,
+                    fontWeight: 700,
+                    color: '#94a3b8',
+                    cursor: 'pointer',
+                    fontFamily: 'inherit',
+                  }}
+                >
+                  Clear Override
+                </button>
+              )}
+            </div>
+            <input
+              type="date"
+              value={manualForecastDate}
+              onChange={(event) => handleManualForecastChange(event.target.value)}
+              style={{
+                width: '100%',
+                padding: '10px 12px',
+                borderRadius: 10,
+                border: '1px solid var(--border)',
+                background: 'var(--bg-base)',
+                color: 'var(--text-primary)',
+                fontSize: 12,
+                outline: 'none',
+                fontFamily: 'inherit',
+              }}
+            />
           </div>
 
           {/* Progress bars */}
@@ -833,7 +974,7 @@ export default function TrackerPulsePage() {
           {/* TIME LEFT + DAYS NEEDED */}
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 10 }}>
             {[
-              { label: 'TIME LEFT',   value: stats.remaining > 0 ? `${Math.max(1, Math.ceil(stats.daysNeeded))}d` : 'Done' },
+              { label: 'TIME LEFT',   value: displayedTimeLeft },
               { label: 'DAYS NEEDED', value: stats.remaining > 0 ? `${stats.daysNeeded} d` : '0 d' },
             ].map(m => (
               <div key={m.label} style={{ background: 'var(--border-subtle)', borderRadius: 8, padding: '10px 12px' }}>
@@ -857,9 +998,11 @@ export default function TrackerPulsePage() {
           </div>
 
           {/* Narrative */}
-          {stats.remaining > 0 && stats.avgPerDay > 0 && (
+          {(manualForecastDateObject || (stats.remaining > 0 && stats.avgPerDay > 0)) && (
             <div style={{ padding: '10px 14px', background: 'var(--border-subtle)', borderRadius: 8, fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.5 }}>
-              At the current checklist closure daily run rate of {stats.avgPerDay} checklists/day, the project needs about {Math.ceil(stats.daysNeeded)} more day{Math.ceil(stats.daysNeeded) !== 1 ? 's' : ''} to close the remaining {stats.remaining} checklist{stats.remaining !== 1 ? 's' : ''}.
+              {manualForecastDateObject
+                ? `Manual forecast completion is set to ${displayedForecastLabel}. The auto-calculated forecast from current closure pace remains ${autoForecastLabel}.`
+                : `At the current checklist closure daily run rate of ${stats.avgPerDay} checklists/day, the project needs about ${Math.ceil(stats.daysNeeded)} more day${Math.ceil(stats.daysNeeded) !== 1 ? 's' : ''} to close the remaining ${stats.remaining} checklist${stats.remaining !== 1 ? 's' : ''}.`}
             </div>
           )}
         </div>
