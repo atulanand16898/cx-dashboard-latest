@@ -114,6 +114,7 @@ public class SecurityConfig {
                 // without requiring a JWT token. Without this, the browser's preflight
                 // gets a 401 and the actual request never fires.
                 .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
+                .requestMatchers("/actuator/health", "/actuator/health/**").permitAll()
                 .requestMatchers("/api/auth/**").permitAll()
                 .requestMatchers("/h2-console/**").permitAll()
                 .anyRequest().authenticated()
